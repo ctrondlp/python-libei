@@ -96,6 +96,11 @@ device.start_emulating().pointer_motion(5, 0).frame().stop_emulating()
 Wait for `DEVICE_RESUMED`, not `DEVICE_ADDED` — a device arrives paused, and
 libei calls sending events before it resumes "a client bug".
 
+This loop takes the first device to resume, which is fine here because only
+`POINTER` was bound. Bind more than one capability and a seat may resume
+several devices — see the absolute-positioning notes under
+[Sending input](#sending-input) before reusing this pattern.
+
 ## Sending input
 
 Every burst of input is wrapped in `start_emulating()` … `frame()` …
@@ -134,6 +139,30 @@ fall inside one of `device.regions`:
 device.start_emulating().pointer_motion_absolute(960, 540).frame().stop_emulating()
 ```
 
+**Pick the device by capability, not by arrival order.** A seat can resume
+more than one device — on GNOME you get *both* a relative `virtual pointer`
+and an absolute `shared virtual absolute pointer`, and the relative one
+arrives first. Reusing the quick-start's "first `DEVICE_RESUMED` wins" loop
+here hands you the relative device, on which `pointer_motion_absolute()`
+does nothing at all: no exception, no movement, just an internal libei
+warning (`device is not an absolute pointer`). Wait for the one you need:
+
+```python
+device = None
+while device is None:
+    select.select([sender.fd], [], [], 5)
+    sender.dispatch()
+    for event in sender.events:
+        if event.event_type is ei.EventType.SEAT_ADDED:
+            event.seat.bind((
+                ei.DeviceCapability.POINTER_ABSOLUTE,
+                ei.DeviceCapability.BUTTON,
+            ))
+        elif event.event_type is ei.EventType.DEVICE_RESUMED:
+            if ei.DeviceCapability.POINTER_ABSOLUTE in event.device.capabilities:
+                device = event.device      # skip the relative sibling
+```
+
 Touch uses its own short-lived object rather than the device directly:
 
 ```python
@@ -163,6 +192,11 @@ device.stop_emulating()
   `ValueError` rather than hanging.
 - **Capabilities are per-seat.** A seat only offers some; check
   `seat.capabilities` before binding.
+- **One seat can resume several devices.** Bind both `POINTER` and
+  `POINTER_ABSOLUTE` and GNOME gives you two, relative first. Taking
+  whichever resumes first is a coin flip — select on `device.capabilities`
+  instead. Sending an event the device lacks the capability for is silently
+  ignored, which makes this look like the injection simply not working.
 
 ## Reading input instead of sending it
 
