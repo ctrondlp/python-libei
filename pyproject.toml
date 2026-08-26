@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-libei"
+version = "0.1.0.dev0"
+description = "Python bindings for libei, libeis and liboeffis (Wayland Emulated Input)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{name = "Dennis K. Paulsen"}]
+keywords = ["wayland", "libei", "input", "portal", "remote-desktop"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+
+# Zero hard dependencies: the native libraries (libei/libeis/liboeffis) are
+# loaded lazily via ctypes at first use, not at import time, so this package
+# never fails to import just because a caller hasn't installed them. See
+# src/libei/_capi/loader.py.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+homepage = "https://github.com/ctrondlp/python-libei"
+repository = "https://github.com/ctrondlp/python-libei"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# PEP 561: ship the marker so type checkers use our annotations.
+[tool.setuptools.package-data]
+libei = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires the real libei/libeis/liboeffis shared libraries to be installed",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+files = ["src", "tests"]
+strict = true
+# ctypes function objects are typed Callable[..., Any] -- there's no way to
+# give LazyLibrary.function() a properly parameterized return type without a
+# TypeVar per bound function, which the runtime signature can't provide.
+# Every property in ei.py/eis.py/oeffis.py re-types a raw C call's result,
+# so this fires everywhere in the wrapper layer for no actionable reason.
+warn_return_any = false
