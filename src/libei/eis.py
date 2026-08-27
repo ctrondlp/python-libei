@@ -22,11 +22,12 @@ Typical usage (accepting one client via the fd backend)::
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import enum
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from ctypes import c_void_p
 from pathlib import Path
 from typing import IO
@@ -81,10 +82,11 @@ class EventType(enum.IntEnum):
     TOUCH_DOWN = 800
     TOUCH_UP = 801
     TOUCH_MOTION = 802
-    # Recognized for classification only -- no data getters implemented.
-    # See docs/vs-snegg.md.
     TEXT_KEYSYM = 900
     TEXT_UTF8 = 901
+    # As in ei.EventType: on libei's main branch, in no released version,
+    # values matching upstream main. No accessors are bound for them.
+    # See docs/vs-snegg.md.
     SWIPE_BEGIN = 1000
     SWIPE_UPDATE = 1001
     SWIPE_END = 1002
@@ -111,6 +113,9 @@ class DeviceCapability(enum.IntFlag):
     SCROLL = 1 << 4
     BUTTON = 1 << 5
     TEXT = 1 << 6
+    # On libei's main branch only: 1.6.0's enum ei_device_capability
+    # stops at TEXT. Binding one of these against a released library is a
+    # silent noop -- no error, no device.
     GESTURES = 1 << 7
     STYLUS = 1 << 8
 
@@ -122,6 +127,15 @@ class DeviceType(enum.IntEnum):
 
 class KeymapType(enum.IntEnum):
     XKB = 1
+
+
+class Flag(enum.IntEnum):
+    """Context behavior toggles for :meth:`Eis.set_flag`."""
+
+    #: Announce ei_device protocol version 3 or later. With this set, a
+    #: device added via Device.add() must not be resumed until its
+    #: DEVICE_READY event has arrived.
+    DEVICE_READY = 1
 
 
 class _LogPriority(enum.IntEnum):
@@ -181,10 +195,32 @@ class TouchEvent:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class TouchUpEvent:
+    touchid: int
+    is_cancel: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TextUtf8Event:
+    text: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TextKeysymEvent:
+    keysym: int
+    is_press: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class ConfigureRegion:
     offset: tuple[int, int]
     size: tuple[int, int]
     physical_scale: float = 1.0
+    # Device.configure() creates, configures and adds each region itself,
+    # so a caller has no window in which to call Region.set_mapping_id() --
+    # it has to be part of the description handed in. Requires libei 1.1;
+    # left None, nothing is set and no 1.1 symbol is touched.
+    mapping_id: str | None = None
 
 
 class Region(CObject):
@@ -212,6 +248,25 @@ class Region(CObject):
         """Scale between logical pixels and this region's physical size."""
         return _capi.libeis.region_get_physical_scale(self)
 
+    @property
+    def mapping_id(self) -> str | None:
+        """Identifier shared by regions that map to the same thing.
+
+        ``None`` unless :meth:`set_mapping_id` has set one. Requires
+        libei 1.1.
+        """
+        raw = _capi.libeis.region_get_mapping_id(self)
+        return None if raw is None else raw.decode("utf-8")
+
+    def set_mapping_id(self, mapping_id: str) -> Region:
+        """Tag this region so clients can group it with others.
+
+        Call before :meth:`Device.add`, like the rest of a region's
+        configuration. Requires libei 1.1.
+        """
+        _capi.libeis.region_set_mapping_id(self, mapping_id.encode("utf-8"))
+        return self
+
     def contains(self, x: float, y: float) -> bool:
         """Whether the given logical-pixel point falls inside this region."""
         return bool(_capi.libeis.region_contains(self, x, y))
@@ -236,7 +291,8 @@ class Keymap(CObject):
         """Memmap-able file descriptor holding the keymap data.
 
         A fresh duplicate on each read, which the caller owns and should
-        close; the keymap keeps its own.
+        close; the keymap keeps its own. Rewound to position 0 where the
+        fd allows it, so the data is simply readable.
         """
         # See ei.Keymap.fd: eis_keymap_get_fd() is a plain field read, not
         # a duped/transferred fd -- duplicate it so os.fdopen()'s file
@@ -244,7 +300,14 @@ class Keymap(CObject):
         raw_fd = _capi.libeis.keymap_get_fd(self)
         if raw_fd < 0:
             raise Error("eis_keymap_get_fd() reported no usable file descriptor")
-        return os.fdopen(os.dup(raw_fd), "rb")
+        duplicate = os.dup(raw_fd)
+        # dup(2) shares the file offset with the original, which is
+        # normally at EOF -- without this rewind a read returns zero bytes
+        # and no error, indistinguishable from an empty keymap. See
+        # ei.Keymap.fd for why a non-seekable fd is tolerated here.
+        with contextlib.suppress(OSError):
+            os.lseek(duplicate, 0, os.SEEK_SET)
+        return os.fdopen(duplicate, "rb")
 
     def add(self) -> None:
         """Publish this object to the client."""
@@ -279,6 +342,15 @@ class Touch(CObject):
     def up(self) -> Touch:
         """End the touch."""
         _capi.libeis.touch_up(self)
+        return self
+
+    def cancel(self) -> Touch:
+        """End the touch as cancelled rather than logically released.
+
+        Needs version 2 or later of the ``ei_touchscreen`` interface on
+        both sides; against an older client this is a noop.
+        """
+        _capi.libeis.touch_cancel(self)
         return self
 
 
@@ -321,6 +393,8 @@ class Device(CObject):
             _capi.libeis.region_set_size(region_obj, *region.size)
             _capi.libeis.region_set_offset(region_obj, *region.offset)
             _capi.libeis.region_set_physical_scale(region_obj, region.physical_scale)
+            if region.mapping_id is not None:
+                region_obj.set_mapping_id(region.mapping_id)
             _capi.libeis.region_add(region_obj)
             region_obj.release()
         return self
@@ -486,6 +560,33 @@ class Device(CObject):
         _capi.libeis.device_scroll_cancel(self, cancel_x, cancel_y)
         return self
 
+    def region_at(self, x: float, y: float) -> Region | None:
+        """The region containing this desktop-wide point, or None.
+
+        Requires libei 1.1.
+        """
+        return Region.wrap(_capi.libeis.device_get_region_at(self, x, y))
+
+    def text_utf8(self, text: str) -> Device:
+        """Send text to the client, for a device with the TEXT capability.
+
+        Requires libei 1.6 on both sides.
+        """
+        # Encoded and passed with an explicit length: the plain
+        # eis_device_text_utf8() takes a NUL-terminated string, which
+        # would silently truncate a str containing a NUL.
+        data = text.encode("utf-8")
+        _capi.libeis.device_text_utf8_with_length(self, data, len(data))
+        return self
+
+    def text_keysym(self, keysym: int, is_press: bool) -> Device:
+        """Send an XKB keysym, for a device with the TEXT capability.
+
+        Requires libei 1.6 on both sides.
+        """
+        _capi.libeis.device_text_keysym(self, keysym, is_press)
+        return self
+
     def touch_new(self) -> Touch:
         """Start a new touch on a device with the TOUCH capability."""
         pointer = _capi.libeis.device_touch_new(self)
@@ -568,6 +669,21 @@ class Client(CObject):
         """The name the client announced for itself."""
         return _capi.libeis.client_get_name(self).decode("utf-8")
 
+    @property
+    def pid(self) -> int:
+        """The client process's pid, via ``SO_PEERCRED``.
+
+        Socket-backend contexts only -- meaningless for a context set up
+        with :meth:`Eis.create_for_fd`, where there is no peer socket to
+        ask. Raises :class:`Error` if the library reports a failure.
+        """
+        result = _capi.libeis.backend_socket_get_client_pid(self)
+        if result < 0:
+            raise Error(
+                f"eis_backend_socket_get_client_pid() failed with errno {-result}"
+            )
+        return result
+
     def connect(self) -> None:
         """Accept this client's connection."""
         _capi.libeis.client_connect(self)
@@ -584,6 +700,43 @@ class Client(CObject):
         seat = Seat.adopt(pointer)
         assert seat is not None
         return seat
+
+    def new_ping(self) -> Ping:
+        """Create a round trip to this client. Requires libei 1.4.
+
+        Call :meth:`Ping.send` to start it; the reply is a PONG event.
+        """
+        pointer = _capi.libeis.client_new_ping(self)
+        if not pointer:
+            raise Error("eis_client_new_ping() returned NULL")
+        ping = Ping.adopt(pointer)
+        assert ping is not None
+        return ping
+
+
+class Ping(CObject):
+    """A round trip to a client, answered by a PONG event.
+
+    Create one with :meth:`Client.new_ping`, call :meth:`send`, then watch
+    for :attr:`EventType.PONG` and compare :attr:`Event.pong` against this
+    object (or its :attr:`id`). Requires libei 1.4.
+    """
+
+    _ref_func = staticmethod(_capi.libeis.ping_ref)
+    _unref_func = staticmethod(_capi.libeis.ping_unref)
+
+    def __repr__(self) -> str:
+        return f"<Ping {self.id}>"
+
+    @property
+    def id(self) -> int:
+        """The identifier libeis assigned to this round trip."""
+        return _capi.libeis.ping_get_id(self)
+
+    def send(self) -> Ping:
+        """Start the round trip. The reply arrives as a PONG event."""
+        _capi.libeis.ping(self)
+        return self
 
 
 class Event(CObject):
@@ -629,9 +782,28 @@ class Event(CObject):
         """
         return Seat.wrap(_capi.libeis.event_get_seat(self))
 
+    def _require(self, getter: str, *valid: EventType) -> None:
+        """Raise unless this event is one of ``valid``.
+
+        libeis's accessors do not report a type mismatch to the caller:
+        reading ``key_event`` off a POINTER_MOTION event returns
+        ``KeyEvent(key=0, is_press=False)``, logging an internal "Bug:"
+        line for some accessors and nothing at all for others. Checking
+        first turns a plausible-looking zero into an immediate error.
+        """
+        actual = self.event_type
+        if actual in valid:
+            return
+        wanted = " or ".join(v.name for v in valid)
+        seen = actual.name if isinstance(actual, EventType) else str(actual)
+        raise TypeError(
+            f"Event.{getter} is only valid for {wanted} events, not {seen}"
+        )
+
     @property
     def seat_capabilities(self) -> tuple[DeviceCapability, ...]:
         """Capabilities the client requested, for a SEAT_BIND event."""
+        self._require("seat_capabilities", EventType.SEAT_BIND)
         return tuple(
             c
             for c in DeviceCapability
@@ -641,11 +813,13 @@ class Event(CObject):
     @property
     def emulating_sequence(self) -> int:
         """Sequence number of the start_emulating transaction."""
+        self._require("emulating_sequence", EventType.DEVICE_START_EMULATING)
         return _capi.libeis.event_emulating_get_sequence(self)
 
     @property
     def key_event(self) -> KeyEvent:
         """Key code and press/release state for a KEYBOARD_KEY event."""
+        self._require("key_event", EventType.KEYBOARD_KEY)
         return KeyEvent(
             key=_capi.libeis.event_keyboard_get_key(self),
             is_press=bool(_capi.libeis.event_keyboard_get_key_is_press(self)),
@@ -654,6 +828,7 @@ class Event(CObject):
     @property
     def button_event(self) -> ButtonEvent:
         """Button code and press/release state for a BUTTON_BUTTON event."""
+        self._require("button_event", EventType.BUTTON_BUTTON)
         return ButtonEvent(
             button=_capi.libeis.event_button_get_button(self),
             is_press=bool(_capi.libeis.event_button_get_is_press(self)),
@@ -662,6 +837,7 @@ class Event(CObject):
     @property
     def pointer_event(self) -> PointerEvent:
         """Relative motion deltas for a POINTER_MOTION event."""
+        self._require("pointer_event", EventType.POINTER_MOTION)
         return PointerEvent(
             dx=_capi.libeis.event_pointer_get_dx(self),
             dy=_capi.libeis.event_pointer_get_dy(self),
@@ -670,6 +846,9 @@ class Event(CObject):
     @property
     def pointer_absolute_event(self) -> PointerAbsoluteEvent:
         """Absolute position for a POINTER_MOTION_ABSOLUTE event."""
+        self._require(
+            "pointer_absolute_event", EventType.POINTER_MOTION_ABSOLUTE
+        )
         return PointerAbsoluteEvent(
             x=_capi.libeis.event_pointer_get_absolute_x(self),
             y=_capi.libeis.event_pointer_get_absolute_y(self),
@@ -678,6 +857,7 @@ class Event(CObject):
     @property
     def scroll_event(self) -> ScrollEvent:
         """Smooth scroll deltas for a SCROLL_DELTA event."""
+        self._require("scroll_event", EventType.SCROLL_DELTA)
         return ScrollEvent(
             dx=_capi.libeis.event_scroll_get_dx(self),
             dy=_capi.libeis.event_scroll_get_dy(self),
@@ -686,6 +866,7 @@ class Event(CObject):
     @property
     def scroll_discrete_event(self) -> ScrollDiscreteEvent:
         """Detent deltas for a SCROLL_DISCRETE event (120 per detent)."""
+        self._require("scroll_discrete_event", EventType.SCROLL_DISCRETE)
         return ScrollDiscreteEvent(
             dx=_capi.libeis.event_scroll_get_discrete_dx(self),
             dy=_capi.libeis.event_scroll_get_discrete_dy(self),
@@ -693,7 +874,15 @@ class Event(CObject):
 
     @property
     def scroll_stop_event(self) -> ScrollStopEvent:
-        """Which axes stopped, for a SCROLL_STOP/SCROLL_CANCEL event."""
+        """Which axes stopped, for a SCROLL_STOP/SCROLL_CANCEL event.
+
+        libeis's header documents these accessors for SCROLL_CANCEL only,
+        but both event types are accepted -- confirmed by round-tripping
+        each through a real client, with no internal "Bug:" log.
+        """
+        self._require(
+            "scroll_stop_event", EventType.SCROLL_STOP, EventType.SCROLL_CANCEL
+        )
         return ScrollStopEvent(
             stop_x=bool(_capi.libeis.event_scroll_get_stop_x(self)),
             stop_y=bool(_capi.libeis.event_scroll_get_stop_y(self)),
@@ -701,12 +890,58 @@ class Event(CObject):
 
     @property
     def touch_event(self) -> TouchEvent:
-        """Touch id and position for a TOUCH_* event."""
+        """Touch id and position for a TOUCH_DOWN or TOUCH_MOTION event.
+
+        Not TOUCH_UP: that event carries no position, so it has its own
+        accessor, :attr:`touch_up_event`.
+        """
+        self._require("touch_event", EventType.TOUCH_DOWN, EventType.TOUCH_MOTION)
         return TouchEvent(
             touchid=_capi.libeis.event_touch_get_id(self),
             x=_capi.libeis.event_touch_get_x(self),
             y=_capi.libeis.event_touch_get_y(self),
         )
+
+    @property
+    def touch_up_event(self) -> TouchUpEvent:
+        """Touch id and cancellation flag for a TOUCH_UP event.
+
+        ``is_cancel`` distinguishes a cancelled touch from a logically
+        released one; it is always False against a client older than
+        ``ei_touchscreen`` version 2.
+        """
+        self._require("touch_up_event", EventType.TOUCH_UP)
+        return TouchUpEvent(
+            touchid=_capi.libeis.event_touch_get_id(self),
+            is_cancel=bool(_capi.libeis.event_touch_get_is_cancel(self)),
+        )
+
+    @property
+    def text_utf8_event(self) -> TextUtf8Event:
+        """The text carried by a TEXT_UTF8 event. Requires libei 1.6."""
+        self._require("text_utf8_event", EventType.TEXT_UTF8)
+        raw = _capi.libeis.event_text_get_utf8(self)
+        return TextUtf8Event(text="" if raw is None else raw.decode("utf-8"))
+
+    @property
+    def text_keysym_event(self) -> TextKeysymEvent:
+        """Keysym and press state for a TEXT_KEYSYM event. Requires libei 1.6."""
+        self._require("text_keysym_event", EventType.TEXT_KEYSYM)
+        return TextKeysymEvent(
+            keysym=_capi.libeis.event_text_get_keysym(self),
+            is_press=bool(_capi.libeis.event_text_get_keysym_is_press(self)),
+        )
+
+    @property
+    def pong(self) -> Ping:
+        """The :class:`Ping` this PONG event answers. Requires libei 1.4."""
+        self._require("pong", EventType.PONG)
+        # Borrowed: the event owns this reference, so wrap() (which takes
+        # its own ref) rather than adopt().
+        ping = Ping.wrap(_capi.libeis.event_pong_get_ping(self))
+        if ping is None:
+            raise Error("eis_event_pong_get_ping() returned NULL for a PONG event")
+        return ping
 
 
 def _log_callback(_eis: int, priority: int, message: bytes, _context: int) -> None:
@@ -781,6 +1016,37 @@ class Eis(CObject):
         """The context's current time, in microseconds."""
         return _capi.libeis.now(self)
 
+    def set_flag(self, flag: Flag) -> None:
+        """Change this context's protocol behavior. Requires libei 1.6.
+
+        Must be called before the backend is set up, so in practice
+        before :meth:`create_for_fd` / :meth:`create_for_socket` -- which
+        also means this is only reachable on a context built by hand.
+        Takes one flag, never a bitmask; call it again for another.
+        """
+        result = _capi.libeis.set_flag(self, flag)
+        if result < 0:
+            raise Error(f"eis_set_flag() failed with errno {-result}")
+
+    def peek_event_type(self) -> EventType | int | None:
+        """Type of the next queued event, without consuming it.
+
+        ``None`` when the queue is empty. See
+        :meth:`libei.ei.Context.peek_event_type` for why only the type is
+        returned and never the event itself.
+        """
+        pointer = _capi.libeis.peek_event(self)
+        if not pointer:
+            return None
+        try:
+            raw = _capi.libeis.event_get_type(pointer)
+        finally:
+            _capi.libeis.event_unref(pointer)
+        try:
+            return EventType(raw)
+        except ValueError:
+            return raw
+
     def dispatch(self) -> None:
         """Read from the connection and queue any events that arrive.
 
@@ -810,23 +1076,31 @@ class Eis(CObject):
         return pointer
 
     @classmethod
-    def create_for_fd(cls) -> Eis:
+    def create_for_fd(cls, flags: Sequence[Flag] = ()) -> Eis:
         """Create a server using the fd backend -- the one real compositors
         use, since it keeps each client's fd private rather than exposing a
         connectable socket path. Call :meth:`add_client` once per
-        connection you want to accept."""
+        connection you want to accept.
+
+        ``flags`` are applied here rather than left to the caller because
+        :meth:`set_flag` has to run before the backend is set up, and this
+        method does both."""
         server = cls(cls._new())
+        for flag in flags:
+            server.set_flag(flag)
         err = _capi.libeis.setup_backend_fd(server)
         if err < 0:
             raise Error(os.strerror(-err), -err)
         return server
 
     @classmethod
-    def create_for_socket(cls, path: Path) -> Eis:
+    def create_for_socket(cls, path: Path, flags: Sequence[Flag] = ()) -> Eis:
         """Create a server listening on a Unix socket, as a compositor
         would (this is the path a real ``ei_setup_backend_socket()`` client
-        connects to)."""
+        connects to). See :meth:`create_for_fd` on ``flags``."""
         server = cls(cls._new())
+        for flag in flags:
+            server.set_flag(flag)
         err = _capi.libeis.setup_backend_socket(server, os.fspath(path).encode("utf-8"))
         if err < 0:
             raise Error(os.strerror(-err), -err)
@@ -844,8 +1118,11 @@ __all__ = [
     "Error",
     "Event",
     "EventType",
+    "Flag",
+    "KeyEvent",
     "Keymap",
     "KeymapType",
+    "Ping",
     "PointerAbsoluteEvent",
     "PointerEvent",
     "Region",
@@ -853,7 +1130,10 @@ __all__ = [
     "ScrollEvent",
     "ScrollStopEvent",
     "Seat",
+    "TextKeysymEvent",
+    "TextUtf8Event",
     "Touch",
     "TouchEvent",
+    "TouchUpEvent",
     "is_available",
 ]

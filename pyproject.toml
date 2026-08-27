@@ -5,17 +5,41 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "python-libei"
 version = "0.1.0.dev0"
-description = "Python bindings for libei, libeis and liboeffis (Wayland Emulated Input)"
+description = "Inject and receive input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{name = "Dennis K. Paulsen"}]
-keywords = ["wayland", "libei", "input", "portal", "remote-desktop"]
+keywords = [
+    "wayland",
+    "libei",
+    "libeis",
+    "liboeffis",
+    "input",
+    "input-emulation",
+    "emulated-input",
+    "portal",
+    "xdg-desktop-portal",
+    "remote-desktop",
+    "automation",
+    "gui-testing",
+    "accessibility",
+    "ctypes",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Programming Language :: Python :: 3",
+    "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Desktop Environment",
     "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
 

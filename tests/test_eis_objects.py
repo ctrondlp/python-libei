@@ -27,6 +27,7 @@ def _isolated_instance_caches(monkeypatch: pytest.MonkeyPatch) -> None:
         eis.Region,
         eis.Keymap,
         eis.Touch,
+        eis.Ping,
     ):
         monkeypatch.setattr(cls, "_instances", type(cls._instances)())
         # staticmethod() matters, not just style: a plain function stored
@@ -321,3 +322,78 @@ def test_device_start_emulating_shares_one_counter_with_the_ei_side(
     eis_device.start_emulating()
 
     assert len(set(seen)) == len(seen), seen
+
+
+def test_event_accessor_rejects_the_wrong_event_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same silent-zero problem as on the client side: libeis returns
+    # PointerEvent(dx=0.0, dy=0.0) rather than reporting the mismatch.
+    monkeypatch.setattr(
+        _capi.libeis, "event_get_type", lambda p: eis.EventType.KEYBOARD_KEY
+    )
+    reached = []
+    monkeypatch.setattr(
+        _capi.libeis, "event_pointer_get_dx", lambda p: reached.append(p)
+    )
+    event = eis.Event.wrap(0x1)
+    assert event is not None
+
+    with pytest.raises(TypeError, match="pointer_event.*POINTER_MOTION.*KEYBOARD_KEY"):
+        _ = event.pointer_event
+    assert not reached
+
+
+def test_touch_up_event_carries_the_cancel_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _capi.libeis, "event_get_type", lambda p: eis.EventType.TOUCH_UP
+    )
+    monkeypatch.setattr(_capi.libeis, "event_touch_get_id", lambda p: 3)
+    monkeypatch.setattr(_capi.libeis, "event_touch_get_is_cancel", lambda p: False)
+    event = eis.Event.wrap(0x1)
+    assert event is not None
+    assert event.touch_up_event == eis.TouchUpEvent(touchid=3, is_cancel=False)
+
+
+def test_text_events_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _capi.libeis, "event_get_type", lambda p: eis.EventType.TEXT_UTF8
+    )
+    monkeypatch.setattr(_capi.libeis, "event_text_get_utf8", lambda p: "héllo".encode())
+    event = eis.Event.wrap(0x1)
+    assert event is not None
+    assert event.text_utf8_event == eis.TextUtf8Event(text="héllo")
+
+    # A NULL string is not an error -- it means no text, not a broken event.
+    monkeypatch.setattr(_capi.libeis, "event_text_get_utf8", lambda p: None)
+    assert event.text_utf8_event == eis.TextUtf8Event(text="")
+
+
+def test_region_mapping_id_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
+    stored: list[bytes] = []
+    monkeypatch.setattr(
+        _capi.libeis, "region_set_mapping_id", lambda p, v: stored.append(v)
+    )
+    monkeypatch.setattr(
+        _capi.libeis, "region_get_mapping_id", lambda p: stored[-1] if stored else None
+    )
+    region = eis.Region.wrap(0x1)
+    assert region is not None
+    assert region.mapping_id is None
+    assert region.set_mapping_id("screen-0") is region
+    assert region.mapping_id == "screen-0"
+
+
+def test_keymap_fd_is_rewound(monkeypatch: pytest.MonkeyPatch) -> None:
+    fd = os.memfd_create("keymap")
+    try:
+        os.write(fd, b"xkb_keymap {};")
+        monkeypatch.setattr(_capi.libeis, "keymap_get_fd", lambda p: fd)
+        keymap = eis.Keymap.wrap(0x1)
+        assert keymap is not None
+        with keymap.fd as f:
+            assert f.read() == b"xkb_keymap {};"
+    finally:
+        os.close(fd)

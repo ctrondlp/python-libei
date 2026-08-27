@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ctypes import (
     CFUNCTYPE,
+    POINTER,
     c_bool,
     c_char_p,
     c_double,
@@ -43,6 +44,12 @@ get_fd = lib.function("ei_get_fd", (c_void_p,), c_int)
 dispatch = lib.function("ei_dispatch", (c_void_p,), None)
 get_event = lib.function("ei_get_event", (c_void_p,), c_void_p)
 now = lib.function("ei_now", (c_void_p,), c_uint64)
+is_sender = lib.function("ei_is_sender", (c_void_p,), c_bool)
+# Returns an owned reference that the caller must unref, and calling
+# ei_get_event() while still holding it is undefined behavior -- see
+# ei.Context.peek_event_type(), which never lets that reference escape.
+peek_event = lib.function("ei_peek_event", (c_void_p,), c_void_p)
+disconnect = lib.function("ei_disconnect", (c_void_p,), None)  # libei 1.4+
 
 seat_get_name = lib.function("ei_seat_get_name", (c_void_p,), c_char_p)
 seat_has_capability = lib.function("ei_seat_has_capability", (c_void_p, c_int), c_bool)
@@ -52,6 +59,10 @@ seat_has_capability = lib.function("ei_seat_has_capability", (c_void_p, c_int), 
 seat_bind_capabilities = lib.function("ei_seat_bind_capabilities", (c_void_p,), None)
 seat_unbind_capabilities = lib.function(
     "ei_seat_unbind_capabilities", (c_void_p,), None
+)
+# Variadic and sentinel-terminated like ei_seat_bind_capabilities above.
+seat_request_device_with_capabilities = lib.function(  # libei 1.6+
+    "ei_seat_request_device_with_capabilities", (c_void_p,), None
 )
 seat_ref = lib.function("ei_seat_ref", (c_void_p,), c_void_p)
 seat_unref = lib.function("ei_seat_unref", (c_void_p,), c_void_p)
@@ -113,6 +124,20 @@ event_scroll_get_discrete_dy = lib.function(
 event_touch_get_id = lib.function("ei_event_touch_get_id", (c_void_p,), c_uint32)
 event_touch_get_x = lib.function("ei_event_touch_get_x", (c_void_p,), c_double)
 event_touch_get_y = lib.function("ei_event_touch_get_y", (c_void_p,), c_double)
+event_touch_get_is_cancel = lib.function(
+    "ei_event_touch_get_is_cancel", (c_void_p,), c_bool
+)
+event_text_get_utf8 = lib.function(  # libei 1.6+
+    "ei_event_text_get_utf8", (c_void_p,), c_char_p
+)
+event_text_get_keysym = lib.function(  # libei 1.6+
+    "ei_event_text_get_keysym", (c_void_p,), c_uint32
+)
+event_text_get_keysym_is_press = lib.function(  # libei 1.6+
+    "ei_event_text_get_keysym_is_press", (c_void_p,), c_bool
+)
+# Borrowed reference -- the event still owns it, so wrap() rather than adopt().
+event_pong_get_ping = lib.function("ei_event_pong_get_ping", (c_void_p,), c_void_p)
 
 device_ref = lib.function("ei_device_ref", (c_void_p,), c_void_p)
 device_unref = lib.function("ei_device_unref", (c_void_p,), c_void_p)
@@ -160,6 +185,17 @@ device_touch_new = lib.function("ei_device_touch_new", (c_void_p,), c_void_p)
 device_keyboard_get_keymap = lib.function(
     "ei_device_keyboard_get_keymap", (c_void_p,), c_void_p
 )
+device_get_region_at = lib.function(  # libei 1.1+
+    "ei_device_get_region_at", (c_void_p, c_double, c_double), c_void_p
+)
+# The _with_length form, not plain ei_device_text_utf8(): a c_char_p stops at
+# the first NUL, so a Python str containing one would be silently truncated.
+device_text_utf8_with_length = lib.function(  # libei 1.6+
+    "ei_device_text_utf8_with_length", (c_void_p, c_char_p, c_size_t), None
+)
+device_text_keysym = lib.function(  # libei 1.6+
+    "ei_device_text_keysym", (c_void_p, c_uint32, c_bool), None
+)
 
 region_ref = lib.function("ei_region_ref", (c_void_p,), c_void_p)
 region_unref = lib.function("ei_region_unref", (c_void_p,), c_void_p)
@@ -172,6 +208,15 @@ region_get_physical_scale = lib.function(
 )
 region_contains = lib.function(
     "ei_region_contains", (c_void_p, c_double, c_double), c_bool
+)
+region_get_mapping_id = lib.function(  # libei 1.1+
+    "ei_region_get_mapping_id", (c_void_p,), c_char_p
+)
+# x and y are in/out parameters, overwritten only when the point is inside.
+region_convert_point = lib.function(  # libei 1.1+
+    "ei_region_convert_point",
+    (c_void_p, POINTER(c_double), POINTER(c_double)),
+    c_bool,
 )
 
 keymap_ref = lib.function("ei_keymap_ref", (c_void_p,), c_void_p)
@@ -187,3 +232,12 @@ touch_get_device = lib.function("ei_touch_get_device", (c_void_p,), c_void_p)
 touch_down = lib.function("ei_touch_down", (c_void_p, c_double, c_double), None)
 touch_motion = lib.function("ei_touch_motion", (c_void_p, c_double, c_double), None)
 touch_up = lib.function("ei_touch_up", (c_void_p,), None)
+touch_cancel = lib.function("ei_touch_cancel", (c_void_p,), None)
+
+# ei_new_ping() returns an owned reference; ei_ping() then triggers the round
+# trip that comes back as an EI_EVENT_PONG.
+new_ping = lib.function("ei_new_ping", (c_void_p,), c_void_p)  # libei 1.4+
+ping = lib.function("ei_ping", (c_void_p,), None)  # libei 1.4+
+ping_get_id = lib.function("ei_ping_get_id", (c_void_p,), c_uint64)  # libei 1.4+
+ping_ref = lib.function("ei_ping_ref", (c_void_p,), c_void_p)  # libei 1.4+
+ping_unref = lib.function("ei_ping_unref", (c_void_p,), c_void_p)  # libei 1.4+

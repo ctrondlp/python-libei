@@ -69,6 +69,29 @@ mechanism ended up shaped the way they did.
   embedded as a dependency in other tools calls for a higher coverage bar
   than a prototyping aid does.
 
+- **Deliberately partial C-API coverage.** 250 of the 302 functions the
+  three libraries export (1.6.0) are bound here -- snegg's own coverage
+  hasn't been counted, so this is a statement about this project, not a
+  comparison. What is left out is redundant under a Python wrapper:
+  `*_get_user_data()`/`*_set_user_data()` (state lives on the wrapper
+  object), the `*_ref()`/`*_unref()` pairs `CObject` owns, the
+  logging-context accessors, `*_event_type_to_string()`, the
+  NUL-terminated `*_device_text_utf8()` (the `_with_length` form is bound
+  instead, so a str containing a NUL isn't silently truncated), and the
+  `*_get_context()` accessors, which have nothing to return: a context is
+  only ever created by its own `create_for_*()`, never wrapped from a raw
+  pointer. The README's "What's implemented" section says the same in
+  user-facing terms, so a caller finds out from the docs rather than from
+  an `AttributeError`.
+
+- **Accessors check the event type.** libei's data accessors don't report a
+  mismatch to the caller: `ei_event_keyboard_get_key()` on a pointer event
+  returns 0, logging an internal "Bug:" line for some accessors and nothing
+  at all for others. `Event.key_event` and friends raise `TypeError` naming
+  both types instead, which is why `TOUCH_UP` grew its own `touch_up_event`
+  accessor -- it carries no coordinates, so sharing `touch_event` would have
+  meant reading two meaningless zeros.
+
 ## What's unverified
 
 The portal (`oeffis`) path has no automated live-integration test in either
@@ -97,9 +120,13 @@ project's own first draft rather than anything inherited from snegg.
    end-to-end test run. libei's own header comment on the enum says
    outright that it "is not exhaustive, future versions of this library
    may add new event types" and that unknown events must still be released
-   with `ei_event_unref()`. Both enums here were rebuilt against the
-   actual current headers (adding text/gesture/stylus event types too,
-   even though this package doesn't implement data getters for those), and
+   with `ei_event_unref()`. Both enums here were rebuilt to cover every
+   type upstream defines -- including the text types, and the
+   gesture/stylus ones that exist on libei's `main` branch but in no
+   released version (1.6.0's `enum ei_event_type` stops at
+   `EI_EVENT_TEXT_UTF8`; the values here match `main` exactly, checked
+   2026-08-27). Data getters exist for the text types only, since nothing
+   released exports the gesture/stylus accessors to verify against. And
    `Event.event_type` now returns a plain `int` instead of raising for any
    value still outside the table, honoring that documented contract
    instead of assuming the table is complete.

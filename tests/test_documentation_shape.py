@@ -154,10 +154,52 @@ def test_readme_device_methods_exist() -> None:
         "scroll_discrete",
         "touch_new",
         "regions",
+        "keymap",
+        "text_utf8",
+        "text_keysym",
+        "region_at",
     ):
         assert hasattr(ei.Device, method), f"ei.Device.{method} is documented but gone"
-    for method in ("down", "motion", "up"):
+    for method in ("down", "motion", "up", "cancel"):
         assert hasattr(ei.Touch, method), f"ei.Touch.{method} is documented but gone"
+
+
+def test_readme_connection_and_region_api_exists() -> None:
+    # Same guard for the parts of the README outside the input cookbook:
+    # the Connection lifecycle section, the keymap walkthrough and the
+    # region helpers all name methods a reader will copy.
+    for cls, methods in (
+        (ei.Context, ("new_ping", "disconnect", "peek_event_type", "is_sender")),
+        (ei.Seat, ("bind", "unbind", "request_device", "capabilities")),
+        (ei.Region, ("mapping_id", "convert_point", "contains")),
+        (ei.Keymap, ("fd", "size", "keymap_type")),
+        (ei.Ping, ("id", "send")),
+        (ei.Event, ("touch_up_event", "text_utf8_event", "text_keysym_event", "pong")),
+    ):
+        for method in methods:
+            assert hasattr(cls, method), (
+                f"ei.{cls.__name__}.{method} is documented but gone"
+            )
+    # eis mirrors the client side; the EIS-server section documents these.
+    for method in ("set_flag", "peek_event_type", "add_client"):
+        assert hasattr(eis.Eis, method), f"eis.Eis.{method} is documented but gone"
+    assert hasattr(eis.ConfigureRegion, "mapping_id")
+
+
+def test_readme_version_gated_features_are_named_with_their_versions() -> None:
+    # Every feature that needs a libei newer than the 1.0.0 floor has to
+    # say so, or a reader on an older build gets a LibraryNotFoundError
+    # with no way to know it was expected.
+    readme = _README.read_text()
+    for feature, version in (
+        ("text_utf8", "1.6"),
+        ("request_device", "1.6"),
+        ("new_ping", "1.4"),
+        ("disconnect", "1.4"),
+        ("convert_point", "1.1"),
+    ):
+        assert feature in readme, f"{feature} is no longer documented"
+        assert version in readme, f"README no longer states the {version} requirement"
 
 
 def test_readme_input_codes_match_linux_headers() -> None:

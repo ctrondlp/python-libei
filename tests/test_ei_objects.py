@@ -101,6 +101,12 @@ def test_event_get_type_wraps_result_in_enum(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_pointer_event_reads_dx_dy(monkeypatch: pytest.MonkeyPatch) -> None:
+    # event_get_type has to be stubbed too: every data accessor checks the
+    # event's type before reading, so an event whose type is unstubbed
+    # would reach the real C call with a fake pointer.
+    monkeypatch.setattr(
+        _capi.libei, "event_get_type", lambda p: ei.EventType.POINTER_MOTION
+    )
     monkeypatch.setattr(_capi.libei, "event_pointer_get_dx", lambda p: 1.5)
     monkeypatch.setattr(_capi.libei, "event_pointer_get_dy", lambda p: -2.5)
     event = ei.Event.wrap(0x1)
@@ -109,6 +115,9 @@ def test_pointer_event_reads_dx_dy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_key_event_reads_key_and_press_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _capi.libei, "event_get_type", lambda p: ei.EventType.KEYBOARD_KEY
+    )
     monkeypatch.setattr(_capi.libei, "event_keyboard_get_key", lambda p: 30)
     monkeypatch.setattr(_capi.libei, "event_keyboard_get_key_is_press", lambda p: 1)
     event = ei.Event.wrap(0x1)
@@ -509,3 +518,236 @@ def test_context_fd_is_not_memoized(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = ei.Context(0x1)
     assert ctx.fd == -1  # before setup
     assert ctx.fd == 7  # after setup, the new value is visible
+
+
+# --- accessor type checking -------------------------------------------------
+
+
+def test_event_accessor_rejects_the_wrong_event_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # libei's own accessors don't report a mismatch: reading key_event off a
+    # POINTER_MOTION event returns KeyEvent(key=0, is_press=False), which is
+    # indistinguishable from a real key 0. Verified against the real library
+    # before this check existed -- see test_integration_extras.py.
+    monkeypatch.setattr(
+        _capi.libei, "event_get_type", lambda p: ei.EventType.POINTER_MOTION
+    )
+    reached = []
+    monkeypatch.setattr(
+        _capi.libei, "event_keyboard_get_key", lambda p: reached.append(p)
+    )
+    event = ei.Event.wrap(0x1)
+    assert event is not None
+
+    with pytest.raises(TypeError, match="key_event.*KEYBOARD_KEY.*POINTER_MOTION"):
+        _ = event.key_event
+    assert not reached, "the C accessor must not be called for the wrong type"
+
+
+def test_event_accessor_accepts_either_valid_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # SCROLL_STOP and SCROLL_CANCEL share one accessor pair.
+    monkeypatch.setattr(_capi.libei, "event_scroll_get_stop_x", lambda p: True)
+    monkeypatch.setattr(_capi.libei, "event_scroll_get_stop_y", lambda p: False)
+    for event_type in (ei.EventType.SCROLL_STOP, ei.EventType.SCROLL_CANCEL):
+        monkeypatch.setattr(_capi.libei, "event_get_type", lambda p, t=event_type: t)
+        event = ei.Event.wrap(0x1)
+        assert event is not None
+        assert event.scroll_stop_event == ei.ScrollStopEvent(stop_x=True, stop_y=False)
+
+
+def test_touch_accessors_split_by_event_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TOUCH_UP carries no coordinates, so it gets its own accessor rather
+    # than sharing one that would read two meaningless zeros.
+    monkeypatch.setattr(_capi.libei, "event_touch_get_id", lambda p: 42)
+    monkeypatch.setattr(_capi.libei, "event_touch_get_is_cancel", lambda p: True)
+    monkeypatch.setattr(_capi.libei, "event_touch_get_x", lambda p: 1.0)
+    monkeypatch.setattr(_capi.libei, "event_touch_get_y", lambda p: 2.0)
+
+    monkeypatch.setattr(_capi.libei, "event_get_type", lambda p: ei.EventType.TOUCH_UP)
+    event = ei.Event.wrap(0x1)
+    assert event is not None
+    assert event.touch_up_event == ei.TouchUpEvent(touchid=42, is_cancel=True)
+    with pytest.raises(TypeError, match="touch_event"):
+        _ = event.touch_event
+
+    monkeypatch.setattr(
+        _capi.libei, "event_get_type", lambda p: ei.EventType.TOUCH_DOWN
+    )
+    with pytest.raises(TypeError, match="touch_up_event"):
+        _ = event.touch_up_event
+
+
+def test_unknown_event_type_names_the_raw_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A type outside the enum still has to produce a usable message rather
+    # than blowing up in the error path itself.
+    monkeypatch.setattr(_capi.libei, "event_get_type", lambda p: 12345)
+    event = ei.Event.wrap(0x1)
+    assert event is not None
+    with pytest.raises(TypeError, match="not 12345"):
+        _ = event.pointer_event
+
+
+# --- text, touch cancel, ping, regions --------------------------------------
+
+
+def test_text_utf8_passes_an_explicit_byte_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Uses ei_device_text_utf8_with_length rather than the NUL-terminated
+    # form, so text containing a NUL isn't silently truncated.
+    calls: list[tuple[bytes, int]] = []
+    monkeypatch.setattr(
+        _capi.libei,
+        "device_text_utf8_with_length",
+        lambda p, data, length: calls.append((data, length)),
+    )
+    device = ei.Device.wrap(0x1)
+    assert device is not None
+
+    assert device.text_utf8("héllo\x00after") is device
+    data, length = calls[0]
+    assert data == "héllo\x00after".encode()
+    assert length == len(data) == 12
+
+
+def test_text_keysym_and_touch_cancel_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        _capi.libei,
+        "device_text_keysym",
+        lambda p, k, press: calls.append(("keysym", (k, press))),
+    )
+    monkeypatch.setattr(
+        _capi.libei, "touch_cancel", lambda p: calls.append(("cancel", ()))
+    )
+    device = ei.Device.wrap(0x1)
+    touch = ei.Touch.wrap(0x2)
+    assert device is not None and touch is not None
+
+    assert device.text_keysym(0x61, True) is device
+    assert touch.cancel() is touch
+    assert calls == [("keysym", (0x61, True)), ("cancel", ())]
+
+
+def test_region_convert_point_reads_back_the_out_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake(region: object, x: object, y: object) -> bool:
+        # byref() objects expose the c_double they point at as ._obj.
+        x._obj.value = 10.0  # type: ignore[attr-defined]
+        y._obj.value = 20.0  # type: ignore[attr-defined]
+        return True
+
+    monkeypatch.setattr(_capi.libei, "region_convert_point", fake)
+    region = ei.Region.wrap(0x1)
+    assert region is not None
+    assert region.convert_point(110.0, 220.0) == (10.0, 20.0)
+
+
+def test_region_convert_point_returns_none_outside_the_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # libei leaves x/y untouched when the point is outside, so the return
+    # value is the only thing that says whether they mean anything.
+    monkeypatch.setattr(_capi.libei, "region_convert_point", lambda r, x, y: False)
+    region = ei.Region.wrap(0x1)
+    assert region is not None
+    assert region.convert_point(1.0, 2.0) is None
+
+
+def test_region_mapping_id_decodes_or_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    region = ei.Region.wrap(0x1)
+    assert region is not None
+    monkeypatch.setattr(_capi.libei, "region_get_mapping_id", lambda p: b"screen-0")
+    assert region.mapping_id == "screen-0"
+    monkeypatch.setattr(_capi.libei, "region_get_mapping_id", lambda p: None)
+    assert region.mapping_id is None
+
+
+def test_ping_send_and_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ei.Ping, "_instances", type(ei.Ping._instances)())
+    monkeypatch.setattr(ei.Ping, "_ref_func", staticmethod(lambda p: None))
+    monkeypatch.setattr(ei.Ping, "_unref_func", staticmethod(lambda p: None))
+    sent: list[int] = []
+    monkeypatch.setattr(_capi.libei, "ping_get_id", lambda p: 7)
+    monkeypatch.setattr(_capi.libei, "ping", lambda p: sent.append(p))
+
+    ping = ei.Ping.wrap(0x1)
+    assert ping is not None
+    assert ping.id == 7
+    assert ping.send() is ping
+    # The wrapper itself is what reaches ctypes; _as_parameter_ unwraps it.
+    assert sent == [ping]
+    assert repr(ping) == "<Ping 7>"
+
+
+def test_request_device_rejects_an_empty_capability_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[tuple[c_int, ...]] = []
+    monkeypatch.setattr(
+        _capi.libei,
+        "seat_request_device_with_capabilities",
+        lambda p, *a: called.append(a),
+    )
+    seat = ei.Seat.wrap(0x1)
+    assert seat is not None
+    with pytest.raises(ValueError, match="at least one capability"):
+        seat.request_device(())
+    assert not called
+
+    seat.request_device((ei.DeviceCapability.POINTER,))
+    # One vararg per capability plus the NULL sentinel -- never an OR'd mask.
+    assert [c.value for c in called[0]] == [ei.DeviceCapability.POINTER.value, 0]
+
+
+def test_peek_event_type_releases_the_peeked_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # libei calls ei_get_event() while holding a peeked reference undefined
+    # behavior, so peek_event_type() must drop it before returning.
+    unrefs: list[int] = []
+    monkeypatch.setattr(_capi.libei, "peek_event", lambda p: 0x99)
+    monkeypatch.setattr(_capi.libei, "event_get_type", lambda p: 300)
+    monkeypatch.setattr(_capi.libei, "event_unref", lambda p: unrefs.append(p))
+    monkeypatch.setattr(_capi.libei, "log_set_handler", lambda p, h: None)
+    monkeypatch.setattr(_capi.libei, "log_set_priority", lambda p, prio: None)
+
+    ctx = ei.Context(0x1)
+    assert ctx.peek_event_type() is ei.EventType.POINTER_MOTION
+    assert unrefs == [0x99]
+    # And the peeked pointer must not have been cached as a wrapper.
+    assert 0x99 not in ei.Event._instances
+
+
+def test_peek_event_type_is_none_on_an_empty_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_capi.libei, "peek_event", lambda p: None)
+    monkeypatch.setattr(_capi.libei, "log_set_handler", lambda p, h: None)
+    monkeypatch.setattr(_capi.libei, "log_set_priority", lambda p, prio: None)
+    ctx = ei.Context(0x1)
+    assert ctx.peek_event_type() is None
+
+
+def test_keymap_fd_is_rewound(monkeypatch: pytest.MonkeyPatch) -> None:
+    # dup(2) shares the file offset, and libei leaves its own fd at EOF --
+    # without a rewind the caller reads zero bytes and no error, which looks
+    # exactly like an empty keymap.
+    fd = os.memfd_create("keymap")
+    try:
+        os.write(fd, b"xkb_keymap {};")
+        assert os.lseek(fd, 0, os.SEEK_CUR) != 0, "fixture should start at EOF"
+        monkeypatch.setattr(_capi.libei, "keymap_get_fd", lambda p: fd)
+
+        keymap = ei.Keymap.wrap(0x1)
+        assert keymap is not None
+        with keymap.fd as f:
+            assert f.read() == b"xkb_keymap {};"
+    finally:
+        os.close(fd)
