@@ -191,6 +191,13 @@ Getting an EI connection means asking the desktop portal, which shows the user
 a consent dialog. After that you have a fd, and everything else is the same
 regardless of how you got it.
 
+**The dialog comes back every run.** The portal can be asked to remember an
+approval — `SelectDevices` takes a `persist_mode`, and returns a
+`restore_token` to hand back next time — but liboeffis does not expose either:
+`oeffis_create_session()` takes a device-type bitmask and nothing else. If
+being prompted once per launch is unacceptable for what you're building, see
+[Avoiding the consent dialog on every run](#avoiding-the-consent-dialog-on-every-run).
+
 ```python
 import select
 from libei import ei, oeffis
@@ -229,6 +236,30 @@ This loop takes the first device to resume, which is fine here because only
 `POINTER` was bound. Bind more than one capability and a seat may resume
 several devices — see the absolute-positioning notes under
 [Sending input](#sending-input) before reusing this pattern.
+
+### Avoiding the consent dialog on every run
+
+`libei.oeffis` cannot do it. liboeffis wraps the portal handshake into one
+call and exposes no options dict, so the two things that make an approval
+persist — `persist_mode` on `SelectDevices`, and the `restore_token` that
+comes back on `Start` — are unreachable through it. This is a limitation of
+the C library, not of these bindings; there is nothing here left to bind.
+
+What works is negotiating the portal yourself over D-Bus and handing the
+resulting fd to `Sender.create_for_fd()`, which does not care where the fd
+came from:
+
+1. `CreateSession` on `org.freedesktop.portal.RemoteDesktop`
+2. `SelectDevices` with `persist_mode` (1 = while running, 2 = until
+   revoked) and, on later runs, the saved `restore_token`
+3. `Start` — the response carries a fresh `restore_token`, which you store
+4. `ConnectToEIS` — the fd for `ei.Sender.create_for_fd()`
+
+Save the token somewhere durable and pass it back next time; the portal then
+restores the session without prompting. Treat it as a credential — anyone
+holding it can reopen input injection on that desktop, so it belongs
+wherever you'd keep a password, and the decision to store it at all belongs
+to the application rather than to a library.
 
 ## Sending input
 
@@ -579,7 +610,22 @@ python -m mypy
 pytest                        # everything; the integration tests below
                               # skip themselves if libei/libeis is absent
 pytest -m integration         # only the tests that drive the real libraries
+pytest -rs                    # ...and report which tests skipped, and why
 ```
+
+Tests for a feature the installed libei is too old to provide skip
+themselves by checking for the symbol before they negotiate anything --
+`tests/conftest.py`'s `requires_symbol()`. Checking up front rather than
+catching the failure matters: a capability an older library has never heard
+of is accepted silently and simply yields no device, so a test that waited
+for one would hang to its timeout instead of skipping.
+
+CI runs the suite on Python 3.10-3.13 against Ubuntu's libei, which is
+1.2.1 -- deliberately older than the 1.6.0 used for development, so the
+1.0.0 core floor and the version gates both get exercised on a real build
+rather than only on paper. A separate job installs the package with no
+native libraries at all and imports it, which is the property the lazy
+loader exists to provide.
 
 ## Design notes
 

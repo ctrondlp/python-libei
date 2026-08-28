@@ -15,9 +15,21 @@ approval this hands back a file descriptor to pass to
             break
     sender = ei.Sender.create_for_fd(oeffis.eis_fd, name="my-app")
 
-Note: in live testing this path has been the least reliable part of the
-underlying libraries (see the project README) -- treat failures here as
-possibly environment-specific, not necessarily a bug in this wrapper.
+Two limitations worth knowing before building on this:
+
+* **Every run prompts.** The portal supports remembering an approval --
+  ``SelectDevices`` takes a ``persist_mode`` and ``Start`` returns a
+  ``restore_token`` to replay next time -- but liboeffis exposes neither:
+  ``oeffis_create_session()`` takes a device-type bitmask and nothing else.
+  A caller that must not re-prompt has to drive
+  ``org.freedesktop.portal.RemoteDesktop`` over D-Bus itself and pass the
+  resulting fd to :meth:`libei.ei.Sender.create_for_fd`, which does not
+  care how the fd was obtained. See the README section "Avoiding the
+  consent dialog on every run".
+* **Least verified path here.** In live testing this has been the least
+  reliable part of the underlying libraries (see the project README) --
+  treat failures as possibly environment-specific rather than necessarily
+  a bug in this wrapper.
 """
 
 from __future__ import annotations

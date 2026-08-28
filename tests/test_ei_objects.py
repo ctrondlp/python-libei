@@ -15,6 +15,7 @@ from ctypes import c_int
 import pytest
 
 from libei import _capi, ei
+from libei._capi.loader import LibraryNotFoundError
 
 
 @pytest.fixture(autouse=True)
@@ -751,3 +752,45 @@ def test_keymap_fd_is_rewound(monkeypatch: pytest.MonkeyPatch) -> None:
             assert f.read() == b"xkb_keymap {};"
     finally:
         os.close(fd)
+
+
+def test_version_gated_methods_surface_the_missing_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The README promises that on a libei too old for a feature, only that
+    # call fails -- with LibraryNotFoundError naming the symbol -- while the
+    # rest of the package keeps working. Symbols resolve on first use, so
+    # this is what an old install actually looks like from the caller's side.
+    def missing(name: str) -> object:
+        def call(*args: object) -> object:
+            raise LibraryNotFoundError(
+                f"libei.so.1 does not export {name!r} "
+                "(installed version may be too old)"
+            )
+
+        return call
+
+    monkeypatch.setattr(
+        _capi.libei, "device_text_utf8_with_length", missing("ei_device_text_utf8")
+    )
+    monkeypatch.setattr(_capi.libei, "new_ping", missing("ei_new_ping"))
+    monkeypatch.setattr(_capi.libei, "region_get_mapping_id", missing("ei_region_..."))
+    monkeypatch.setattr(_capi.libei, "log_set_handler", lambda p, h: None)
+    monkeypatch.setattr(_capi.libei, "log_set_priority", lambda p, prio: None)
+
+    device = ei.Device.wrap(0x1)
+    region = ei.Region.wrap(0x2)
+    ctx = ei.Context(0x3)
+    assert device is not None and region is not None
+
+    for call in (
+        lambda: device.text_utf8("hi"),  # 1.6
+        lambda: ctx.new_ping(),  # 1.4
+        lambda: region.mapping_id,  # 1.1
+    ):
+        with pytest.raises(LibraryNotFoundError, match="may be too old"):
+            call()
+
+    # ...and an ungated call on the same objects still works.
+    monkeypatch.setattr(_capi.libei, "device_get_name", lambda p: b"still-fine")
+    assert device.name == "still-fine"

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The package itself has no dependencies; this is the dev extra
+      # (pytest/ruff/mypy) plus the package in editable mode.
+      - run: pip install -e '.[dev]'
+
+      # Runtime-only and loaded lazily, so the suite passes without these --
+      # the integration tests skip themselves. Installing them is what makes
+      # those tests actually run.
+      #
+      # Worth knowing: Ubuntu noble ships libei 1.2.1, not 1.6.x. That is a
+      # feature here rather than a problem -- it exercises the 1.0.0 core
+      # floor on a genuinely old build, and makes the 1.1/1.4/1.6 version
+      # gates fire for real, which no developer machine running 1.6 can do.
+      # Tests gated on a missing symbol skip; nothing should hang or fail.
+      - name: Install libei
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libei1 libeis1 liboeffis1
+
+      - name: Report the native libraries actually found
+        run: |
+          python - <<'PY'
+          from libei import ei, eis, oeffis
+          for mod in (ei, eis, oeffis):
+              print(f"{mod.__name__}: {mod.is_available()}")
+          assert ei.is_available() and eis.is_available(), "native libei/libeis missing"
+          PY
+
+      - run: ruff check src tests
+      - run: python -m mypy
+      # -rs so the log names every skip: on an older libei the version-gated
+      # tests skip, and which ones did is the interesting part of the run.
+      - run: python -m pytest -q -rs
+
+  # Importing must work with no native libraries present at all -- that is
+  # the property the lazy loader exists to provide, and the one a consumer
+  # depending on this package optionally relies on.
+  import-without-libei:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install .
+      - name: Import and introspect with no libei installed
+        run: |
+          python - <<'PY'
+          from libei import ei, eis, oeffis
+          assert ei.EventType.POINTER_MOTION == 300
+          assert ei.DeviceCapability.TEXT == 1 << 6
+          for mod in (ei, eis, oeffis):
+              assert mod.is_available() is False, f"{mod.__name__} unexpectedly available"
+          print("import-safe with no native libraries")
+          PY
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
