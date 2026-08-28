@@ -151,6 +151,7 @@ def test_text_keysym_round_trips() -> None:
     assert received[1] == eis.TextKeysymEvent(keysym=0x61, is_press=False)
 
 
+@requires_symbol("libei.so.1", "ei_touch_cancel")
 def test_touch_up_reports_cancellation() -> None:
     pair = Pair((eis.DeviceCapability.TOUCH,))
     ups: list[eis.TouchUpEvent] = []
@@ -197,6 +198,9 @@ def test_touch_up_without_cancel_is_not_flagged() -> None:
         device.stop_emulating()
 
     pair.run(lambda: bool(ups), on_server_event=on_server_event, on_device=on_device)
+    # Deliberately not gated on ei_touch_cancel: this is also the
+    # regression test for touch_up_event degrading rather than raising on a
+    # libei older than 1.4, where the is_cancel accessor does not exist.
     assert ups[0].is_cancel is False
 
 

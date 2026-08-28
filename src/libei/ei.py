@@ -50,6 +50,7 @@ from typing import IO
 
 from . import _capi
 from ._capi.libei import log_handler_t
+from ._capi.loader import LibraryNotFoundError
 from ._cobject import CObject
 
 logger = logging.getLogger("libei.ei")
@@ -390,8 +391,9 @@ class Touch(CObject):
     def cancel(self) -> Touch:
         """End the touch as cancelled rather than logically released.
 
-        Needs version 2 or later of the ``ei_touchscreen`` interface on
-        both sides; against an older EIS implementation this is a noop.
+        Requires libei 1.4. It also needs version 2 or later of the
+        ``ei_touchscreen`` interface on both sides -- against an older EIS
+        implementation the call succeeds but arrives as a plain release.
         """
         _capi.libei.touch_cancel(self)
         return self
@@ -832,13 +834,25 @@ class Event(CObject):
         """Touch id and cancellation flag for a TOUCH_UP event.
 
         ``is_cancel`` distinguishes a touch the compositor cancelled from
-        one the user logically released; it is always False against an
-        EIS implementation older than ``ei_touchscreen`` version 2.
+        one the user logically released. It is False on libei older than
+        1.4, which cannot express cancellation, and against an EIS
+        implementation older than ``ei_touchscreen`` version 2. The touch
+        id is available everywhere.
         """
         self._require("touch_up_event", EventType.TOUCH_UP)
+        try:
+            is_cancel = bool(_capi.libei.event_touch_get_is_cancel(self))
+        except LibraryNotFoundError:
+            # ei_event_touch_get_is_cancel() arrived in libei 1.4.
+            # An older library has no way to express cancellation, so every
+            # TOUCH_UP it reports really is a plain release: False is the
+            # accurate answer, not a failure. Without this the whole
+            # accessor would raise on a 1.0-1.3 install, taking the touch
+            # id -- which those versions do provide -- down with it.
+            is_cancel = False
         return TouchUpEvent(
             touchid=_capi.libei.event_touch_get_id(self),
-            is_cancel=bool(_capi.libei.event_touch_get_is_cancel(self)),
+            is_cancel=is_cancel,
         )
 
     @property

@@ -34,6 +34,7 @@ from typing import IO
 
 from . import _capi
 from ._capi.libei import log_handler_t
+from ._capi.loader import LibraryNotFoundError
 from ._cobject import CObject
 from .ei import _next_emulating_sequence
 
@@ -347,8 +348,9 @@ class Touch(CObject):
     def cancel(self) -> Touch:
         """End the touch as cancelled rather than logically released.
 
-        Needs version 2 or later of the ``ei_touchscreen`` interface on
-        both sides; against an older client this is a noop.
+        Requires libei 1.4, and version 2 or later of the
+        ``ei_touchscreen`` interface on both sides; against an older client
+        it arrives as a plain release.
         """
         _capi.libeis.touch_cancel(self)
         return self
@@ -673,9 +675,10 @@ class Client(CObject):
     def pid(self) -> int:
         """The client process's pid, via ``SO_PEERCRED``.
 
-        Socket-backend contexts only -- meaningless for a context set up
-        with :meth:`Eis.create_for_fd`, where there is no peer socket to
-        ask. Raises :class:`Error` if the library reports a failure.
+        Requires libei 1.5. Socket-backend contexts only -- meaningless
+        for a context set up with :meth:`Eis.create_for_fd`, where there is
+        no peer socket to ask. Raises :class:`Error` if the library reports
+        a failure.
         """
         result = _capi.libeis.backend_socket_get_client_pid(self)
         if result < 0:
@@ -907,13 +910,24 @@ class Event(CObject):
         """Touch id and cancellation flag for a TOUCH_UP event.
 
         ``is_cancel`` distinguishes a cancelled touch from a logically
-        released one; it is always False against a client older than
-        ``ei_touchscreen`` version 2.
+        released one. It is False on libei older than 1.4, and against a
+        client older than ``ei_touchscreen`` version 2. The touch id is
+        available everywhere.
         """
         self._require("touch_up_event", EventType.TOUCH_UP)
+        try:
+            is_cancel = bool(_capi.libeis.event_touch_get_is_cancel(self))
+        except LibraryNotFoundError:
+            # eis_event_touch_get_is_cancel() arrived in libei 1.4.
+            # An older library has no way to express cancellation, so every
+            # TOUCH_UP it reports really is a plain release: False is the
+            # accurate answer, not a failure. Without this the whole
+            # accessor would raise on a 1.0-1.3 install, taking the touch
+            # id -- which those versions do provide -- down with it.
+            is_cancel = False
         return TouchUpEvent(
             touchid=_capi.libeis.event_touch_get_id(self),
-            is_cancel=bool(_capi.libeis.event_touch_get_is_cancel(self)),
+            is_cancel=is_cancel,
         )
 
     @property

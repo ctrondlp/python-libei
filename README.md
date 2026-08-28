@@ -143,12 +143,21 @@ renames before 1.0. What that qualifier covers, concretely:
   | Needs | For |
   | --- | --- |
   | 1.1 | `Region.mapping_id`, `Region.convert_point()`, `Device.region_at()` |
-  | 1.4 | ping/pong round trips (`Context.new_ping()`), `Context.disconnect()` |
+  | 1.4 | ping/pong round trips (`Context.new_ping()`), `Context.disconnect()`, touch cancellation (`Touch.cancel()`) |
+  | 1.5 | `eis.Client.pid` |
   | 1.6 | `Device.text_utf8()` / `text_keysym()` and TEXT events, `Seat.request_device()`, `Eis.set_flag()` |
 
   Nothing is resolved until it is called, so a build without one of these
   costs you only that call — it raises `LibraryNotFoundError` naming the
-  missing symbol, while the rest of the package keeps working.
+  missing symbol, while the rest of the package keeps working. The one
+  exception is `Event.touch_up_event`, which degrades instead of raising:
+  on libei older than 1.4 it reports `is_cancel=False`, since a library
+  with no notion of cancellation genuinely never sends one.
+
+  These versions were established by building libei 1.2.1 and diffing its
+  exported symbols against every binding here, not by reading `@since`
+  annotations — three of them are missing upstream, and taking their
+  absence to mean 1.0 got touch cancellation wrong by four releases.
 
 ## Install
 
@@ -623,7 +632,18 @@ for one would hang to its timeout instead of skipping.
 CI runs the suite on Python 3.10-3.13 against Ubuntu's libei, which is
 1.2.1 -- deliberately older than the 1.6.0 used for development, so the
 1.0.0 core floor and the version gates both get exercised on a real build
-rather than only on paper. A separate job installs the package with no
+rather than only on paper. To reproduce that locally, build an old libei
+and point the loader at it:
+
+```sh
+git clone --depth 1 --branch 1.2.1 \
+    https://gitlab.freedesktop.org/libinput/libei.git
+cd libei && meson setup build -Dtests=disabled -Ddocumentation=[] \
+    --prefix=$PWD/prefix && ninja -C build install
+LD_LIBRARY_PATH=$PWD/prefix/lib64 pytest -q -rs   # from this checkout
+```
+
+Expect passes plus skips, never failures or hangs. A separate job installs the package with no
 native libraries at all and imports it, which is the property the lazy
 loader exists to provide.
 
