@@ -169,6 +169,9 @@ cd python-libei
 pip install .
 ```
 
+The distribution is named `python-libei`, the import is `libei` -- so
+`pip show python-libei`, but `from libei import ei`.
+
 Importing is always safe, even where the native libraries are missing — they
 are loaded on first use, not at import. Check before you rely on them:
 
@@ -674,9 +677,51 @@ cd libei && meson setup build -Dtests=disabled -Ddocumentation=[] \
 LD_LIBRARY_PATH=$PWD/prefix/lib64 pytest -q -rs   # from this checkout
 ```
 
-Expect passes plus skips, never failures or hangs. A separate job installs the package with no
-native libraries at all and imports it, which is the property the lazy
-loader exists to provide.
+Expect passes plus skips, never failures or hangs.
+
+A separate job installs the package with no native libraries at all and
+imports it, which is the property the lazy loader exists to provide.
+
+### Releasing
+
+Versions are SemVer and live in two places -- `pyproject.toml` and
+`src/libei/__init__.py` -- which have to agree with each other and with the
+tag. Nothing enforces that yet.
+
+A release is an annotated, `v`-prefixed tag plus a GitHub Release:
+
+```sh
+git tag -a v0.1.0 -m "0.1.0"
+git push origin v0.1.0
+gh release create v0.1.0 --generate-notes --prerelease
+```
+
+`--prerelease` while the API is unfrozen -- it keeps an alpha out of the
+"Latest release" slot.
+
+Publishing runs from CI on a `v*` tag using PyPI
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC), so
+there is no API token in repository secrets to leak or rotate. The `publish`
+job in `ci.yml` handles it, uploading the artifacts the `build` job already
+ran `twine check` over.
+
+That job depends on two pieces of configuration outside this repository,
+which have to exist before the first tag:
+
+1. On pypi.org, under Account settings -> Publishing, a **pending**
+   publisher -- the flow for a project that has no releases yet. Project
+   `python-libei`, owner `ctrondlp`, repository `python-libei`, workflow
+   `ci.yml`, environment `pypi`. Every field has to match the workflow
+   exactly; a mismatch surfaces as a rejected credential at upload time,
+   not when it is saved.
+2. A GitHub environment named `pypi`, in the repository settings. A
+   required reviewer on it makes each publish a deliberate approval rather
+   than a side effect of pushing a tag.
+
+Worth rehearsing on TestPyPI first: separate account, separate pending
+publisher, and `repository-url: https://test.pypi.org/legacy/` on the
+publish step. PyPI filenames are immutable, so a bad upload can only be
+yanked and superseded by a new version, never replaced.
 
 ## Design notes
 
