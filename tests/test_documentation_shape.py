@@ -234,3 +234,30 @@ def test_ast_of_readme_examples_has_no_bare_event_retention() -> None:
                             f"README example stores the event loop variable "
                             f"{loop_var!r} past its iteration"
                         )
+
+
+def test_version_is_declared_identically_in_both_places() -> None:
+    # The version lives in pyproject.toml (what pip and the built artifacts
+    # use) and in libei.__version__ (what a caller introspects). Nothing
+    # keeps them in step automatically, so a bump that touches one and not
+    # the other ships a package whose own reported version is a lie.
+    import libei
+
+    pyproject = (_PROJECT_ROOT / "pyproject.toml").read_text()
+    match = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE)
+    assert match, "pyproject.toml has no version"
+    assert libei.__version__ == match.group(1), (
+        f"libei.__version__ is {libei.__version__!r} but pyproject.toml "
+        f"says {match.group(1)!r}"
+    )
+
+
+def test_readme_status_names_the_current_version() -> None:
+    # The Status section states the version in prose; a bump that leaves it
+    # behind is how a README starts describing a release that no longer
+    # exists.
+    import libei
+
+    assert f"`{libei.__version__}`" in _README.read_text(), (
+        f"README does not mention the current version {libei.__version__}"
+    )

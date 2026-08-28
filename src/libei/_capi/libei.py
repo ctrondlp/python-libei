@@ -5,6 +5,10 @@ Signatures are hand-declared against the libei API documentation
 than parsed from C declaration strings, so a wrong argument count or type is
 a visible diff here instead of a runtime surprise the first time the
 function is actually called.
+
+Names here drop the ``ei_`` prefix the C symbols carry:
+``ei_unref()`` is bound as ``unref`` and called as
+``_capi.libei.unref()``. The module already says which library it is.
 """
 
 from __future__ import annotations

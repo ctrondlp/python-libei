@@ -64,6 +64,13 @@ class SessionClosedError(DisconnectedError):
 
 
 class DeviceType(enum.IntFlag):
+    """Device types to request from the portal, OR'd together.
+
+    Mirrors ``enum oeffis_device`` from liboeffis.h. Unlike libei's own
+    capability lists, these *are* passed to C as a single OR'd bitmask --
+    ``oeffis_create_session()`` takes one ``uint32_t``.
+    """
+
     ALL_DEVICES = 0
     KEYBOARD = 1
     POINTER = 2
@@ -71,6 +78,13 @@ class DeviceType(enum.IntFlag):
 
 
 class _EventType(enum.IntEnum):
+    """Mirrors ``enum oeffis_event_type``; also used as this object's state.
+
+    :meth:`Oeffis.dispatch` stores the last event it saw in ``_state``, so
+    the terminal ones (CLOSED, DISCONNECTED) keep raising on every later
+    call rather than silently doing nothing.
+    """
+
     NONE = 0
     CONNECTED_TO_EIS = 1
     CLOSED = 2
@@ -103,7 +117,18 @@ class Oeffis:
         self._state = _EventType.NONE
 
     def __del__(self) -> None:
+        # getattr() with defaults rather than plain attribute access:
+        # __init__ raises DisconnectedError when oeffis_new() returns NULL,
+        # and Python still calls __del__ on the half-built object, where
+        # none of these attributes exist yet. A bare self._eis_fd would
+        # raise AttributeError inside __del__ -- which Python swallows to
+        # stderr -- and skip the unref below.
         eis_fd = getattr(self, "_eis_fd", None)
+        # The `True` default is the fail-safe direction: if the attribute is
+        # somehow missing, assume the fd was claimed and leave it alone.
+        # Not closing an fd we own leaks one; closing one the caller already
+        # handed to ei_setup_backend_fd() would break a live connection, or
+        # close an unrelated fd that has since reused the number.
         if eis_fd is not None and not getattr(self, "_eis_fd_claimed", True):
             os.close(eis_fd)
         pointer = getattr(self, "_pointer", None)

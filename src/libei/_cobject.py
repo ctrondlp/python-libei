@@ -181,6 +181,13 @@ class CObject:
                     # letting one through), and assertions disappear
                     # under `python -O` -- silently returning the wrong
                     # wrapper type is worse than the check never running.
+                    #
+                    # ei.py/eis.py do use bare `assert x is not None` after
+                    # wrap(), which is a different job: narrowing wrap()'s
+                    # `T | None` for mypy at a getter the C API documents as
+                    # never returning NULL. Losing one of those under -O
+                    # costs an AttributeError on None; losing this one costs
+                    # a wrapper of the wrong type over live memory.
                     raise TypeError(
                         f"pointer {pointer:#x} already wrapped as "
                         f"{type(existing).__name__}, not {cls.__name__}"

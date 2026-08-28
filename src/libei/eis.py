@@ -47,6 +47,13 @@ def is_available() -> bool:
 
 
 class Error(Exception):
+    """A libeis call failed.
+
+    ``errno`` is the positive errno where libeis reported one (its setup
+    functions return a negative errno rather than setting the global), and
+    ``None`` where the failure was a NULL return with no code attached.
+    """
+
     def __init__(self, message: str, errno: int | None = None) -> None:
         super().__init__(message)
         self.message = message
@@ -107,6 +114,13 @@ class EventType(enum.IntEnum):
 
 
 class DeviceCapability(enum.IntFlag):
+    """Mirrors ``enum eis_device_capability``.
+
+    Server-side counterpart of :class:`libei.ei.DeviceCapability`: these
+    are what :meth:`Device.configure` announces, rather than what a client
+    asks for.
+    """
+
     POINTER = 1 << 0
     POINTER_ABSOLUTE = 1 << 1
     KEYBOARD = 1 << 2
@@ -122,20 +136,24 @@ class DeviceCapability(enum.IntFlag):
 
 
 class DeviceType(enum.IntEnum):
+    """Whether a device is synthesised or backed by real hardware."""
+
     VIRTUAL = 1
     PHYSICAL = 2
 
 
 class KeymapType(enum.IntEnum):
+    """Keymap format. libeis defines exactly one."""
+
     XKB = 1
 
 
 class Flag(enum.IntEnum):
     """Context behavior toggles for :meth:`Eis.set_flag`."""
 
-    #: Announce ei_device protocol version 3 or later. With this set, a
-    #: device added via Device.add() must not be resumed until its
-    #: DEVICE_READY event has arrived.
+    # Announce ei_device protocol version 3 or later. With this set, a
+    # device added via Device.add() must not be resumed until its
+    # DEVICE_READY event has arrived.
     DEVICE_READY = 1
 
 
@@ -214,6 +232,13 @@ class TextKeysymEvent:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ConfigureRegion:
+    """A region to create, in the form :meth:`Device.configure` wants.
+
+    Plain description rather than a live :class:`Region`, because
+    ``configure()`` allocates, fills in and adds each region itself --
+    there is no point at which a caller holds one to set fields on.
+    """
+
     offset: tuple[int, int]
     size: tuple[int, int]
     physical_scale: float = 1.0
@@ -225,6 +250,12 @@ class ConfigureRegion:
 
 
 class Region(CObject):
+    """A rectangular area of the desktop an absolute device maps onto.
+
+    Normally created for you from a :class:`ConfigureRegion` passed to
+    :meth:`Device.configure`; this class is what a getter hands back.
+    """
+
     _ref_func = staticmethod(_capi.libeis.region_ref)
     _unref_func = staticmethod(_capi.libeis.region_unref)
 
@@ -274,6 +305,12 @@ class Region(CObject):
 
 
 class Keymap(CObject):
+    """An XKB keymap to hand a client's keyboard device.
+
+    Build one with :meth:`Device.new_keymap` from an fd holding the keymap
+    text, then :meth:`add` it before adding the device.
+    """
+
     _ref_func = staticmethod(_capi.libeis.keymap_ref)
     _unref_func = staticmethod(_capi.libeis.keymap_unref)
 
@@ -316,6 +353,13 @@ class Keymap(CObject):
 
 
 class Touch(CObject):
+    """One touch point, from :meth:`Device.touch_new` to up or cancel.
+
+    Created per touch rather than per device, so several can be in flight
+    at once. Like the :class:`Device` methods, these only queue --
+    :meth:`Device.frame` commits them.
+    """
+
     # No _ref_func: eis_device_touch_new() is the only function that ever
     # returns a struct eis_touch* (aside from eis_touch_ref/unref
     # themselves), and its docs say the caller already owns that
@@ -327,6 +371,15 @@ class Touch(CObject):
     def device(self) -> Device:
         """The device this touch belongs to."""
         device = Device.wrap(_capi.libeis.touch_get_device(self))
+        # wrap() is typed `T | None` because the C API's getters may
+        # return NULL in general; this one is documented never to. The
+        # assert is here to narrow the type for mypy, not to enforce an
+        # invariant -- under `python -O` it vanishes and a surprise NULL
+        # surfaces as an AttributeError on None at the caller, which is
+        # survivable. Contrast _cobject.py's cross-class pointer check,
+        # which guards memory safety and so is a real `raise`. Every
+        # other `assert ... is not None` in this module is the same
+        # narrowing idiom.
         assert device is not None
         return device
 
@@ -357,6 +410,14 @@ class Touch(CObject):
 
 
 class Device(CObject):
+    """A device this server offers to a client.
+
+    Create with :meth:`Seat.new_device`, describe it with
+    :meth:`configure`, then :meth:`add` and :meth:`resume` it before the
+    client may use it. For a receiving server the sending methods are
+    unused; they exist for a server that feeds input to a client.
+    """
+
     _ref_func = staticmethod(_capi.libeis.device_ref)
     _unref_func = staticmethod(_capi.libeis.device_unref)
 
@@ -600,6 +661,14 @@ class Device(CObject):
 
 
 class Seat(CObject):
+    """A group of devices offered to one client.
+
+    Create with :meth:`Client.new_seat`, announce what it can do with
+    :meth:`configure_capabilities`, then :meth:`add` it. The client
+    answers by binding the capabilities it wants, which arrives as a
+    SEAT_BIND event.
+    """
+
     _ref_func = staticmethod(_capi.libeis.seat_ref)
     _unref_func = staticmethod(_capi.libeis.seat_unref)
 
@@ -655,6 +724,12 @@ class Seat(CObject):
 
 
 class Client(CObject):
+    """A client connection, arriving as a CLIENT_CONNECT event.
+
+    Call :meth:`connect` to accept it (or :meth:`disconnect` to refuse),
+    then offer it seats.
+    """
+
     _ref_func = staticmethod(_capi.libeis.client_ref)
     _unref_func = staticmethod(_capi.libeis.client_unref)
 
@@ -743,6 +818,16 @@ class Ping(CObject):
 
 
 class Event(CObject):
+    """One event from :attr:`Eis.events`.
+
+    :attr:`event_type` says which of the typed accessors below is valid;
+    reading the wrong one raises :class:`TypeError` rather than returning
+    the zeroes libeis would hand back.
+
+    Valid only for the loop iteration that yielded it -- :attr:`Eis.events`
+    releases each event as it resumes.
+    """
+
     _unref_func = staticmethod(_capi.libeis.event_unref)
 
     def __repr__(self) -> str:
@@ -799,9 +884,7 @@ class Event(CObject):
             return
         wanted = " or ".join(v.name for v in valid)
         seen = actual.name if isinstance(actual, EventType) else str(actual)
-        raise TypeError(
-            f"Event.{getter} is only valid for {wanted} events, not {seen}"
-        )
+        raise TypeError(f"Event.{getter} is only valid for {wanted} events, not {seen}")
 
     @property
     def seat_capabilities(self) -> tuple[DeviceCapability, ...]:
@@ -849,9 +932,7 @@ class Event(CObject):
     @property
     def pointer_absolute_event(self) -> PointerAbsoluteEvent:
         """Absolute position for a POINTER_MOTION_ABSOLUTE event."""
-        self._require(
-            "pointer_absolute_event", EventType.POINTER_MOTION_ABSOLUTE
-        )
+        self._require("pointer_absolute_event", EventType.POINTER_MOTION_ABSOLUTE)
         return PointerAbsoluteEvent(
             x=_capi.libeis.event_pointer_get_absolute_x(self),
             y=_capi.libeis.event_pointer_get_absolute_y(self),

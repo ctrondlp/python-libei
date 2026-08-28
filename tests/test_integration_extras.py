@@ -125,8 +125,9 @@ def test_text_utf8_round_trips() -> None:
     def on_device(device: ei.Device) -> None:
         device.start_emulating().text_utf8("héllo").frame().stop_emulating()
 
-    pair.run(lambda: bool(received), on_server_event=on_server_event,
-             on_device=on_device)
+    pair.run(
+        lambda: bool(received), on_server_event=on_server_event, on_device=on_device
+    )
     assert received == ["héllo"]
 
 
@@ -145,8 +146,9 @@ def test_text_keysym_round_trips() -> None:
         device.text_keysym(0x61, False).frame()
         device.stop_emulating()
 
-    pair.run(lambda: len(received) >= 2, on_server_event=on_server_event,
-             on_device=on_device)
+    pair.run(
+        lambda: len(received) >= 2, on_server_event=on_server_event, on_device=on_device
+    )
     assert received[0] == eis.TextKeysymEvent(keysym=0x61, is_press=True)
     assert received[1] == eis.TextKeysymEvent(keysym=0x61, is_press=False)
 
@@ -221,8 +223,7 @@ def test_ping_round_trips_to_a_pong_event() -> None:
         if event.event_type is ei.EventType.PONG:
             pongs.append(event.pong.id)
 
-    pair.run(lambda: bool(pongs), on_client_event=on_client_event,
-             on_device=on_device)
+    pair.run(lambda: bool(pongs), on_client_event=on_client_event, on_device=on_device)
     # The pong has to identify *which* round trip completed, or a caller
     # with more than one in flight can't tell them apart.
     assert pongs[0] == sent_id[0]
@@ -295,8 +296,9 @@ def test_wrong_accessor_raises_instead_of_returning_zeros() -> None:
     def on_device(device: ei.Device) -> None:
         device.start_emulating().pointer_motion(7, 3).frame().stop_emulating()
 
-    pair.run(lambda: bool(checked), on_server_event=on_server_event,
-             on_device=on_device)
+    pair.run(
+        lambda: bool(checked), on_server_event=on_server_event, on_device=on_device
+    )
 
 
 @requires_symbol("libei.so.1", "ei_peek_event")

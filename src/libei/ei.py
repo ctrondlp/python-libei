@@ -46,7 +46,7 @@ import os
 from collections.abc import Iterator
 from ctypes import byref, c_double, c_int, c_void_p
 from pathlib import Path
-from typing import IO
+from typing import IO, TypeVar
 
 from . import _capi
 from ._capi.libei import log_handler_t
@@ -79,6 +79,13 @@ def is_available() -> bool:
 
 
 class Error(Exception):
+    """A libei call failed.
+
+    ``errno`` is the positive errno where libei reported one (its setup
+    functions return a negative errno rather than setting the global), and
+    ``None`` where the failure was a NULL return with no code attached.
+    """
+
     def __init__(self, message: str, errno: int | None = None) -> None:
         super().__init__(message)
         self.message = message
@@ -149,6 +156,13 @@ class EventType(enum.IntEnum):
 
 
 class DeviceCapability(enum.IntFlag):
+    """Mirrors ``enum ei_device_capability`` from libei.h.
+
+    An :class:`enum.IntFlag` so callers can talk about sets of them, but
+    note that libei's own functions never take an OR'd mask -- see
+    :meth:`Seat.bind`, which passes one value per vararg.
+    """
+
     POINTER = 1 << 0
     POINTER_ABSOLUTE = 1 << 1
     KEYBOARD = 1 << 2
@@ -164,11 +178,15 @@ class DeviceCapability(enum.IntFlag):
 
 
 class DeviceType(enum.IntEnum):
+    """Whether a device is synthesised or backed by real hardware."""
+
     VIRTUAL = 1
     PHYSICAL = 2
 
 
 class KeymapType(enum.IntEnum):
+    """Keymap format. libei defines exactly one."""
+
     XKB = 1
 
 
@@ -254,6 +272,15 @@ class TextKeysymEvent:
 
 
 class Region(CObject):
+    """A rectangular area of the desktop an absolute device maps onto.
+
+    A device with :attr:`DeviceCapability.POINTER_ABSOLUTE` or ``TOUCH``
+    covers one or more regions, and the coordinates passed to
+    :meth:`Device.pointer_motion_absolute` are in the desktop-wide logical
+    pixel space those regions sit in -- not relative to any one of them.
+    Use :meth:`convert_point` to go the other way.
+    """
+
     _ref_func = staticmethod(_capi.libei.region_ref)
     _unref_func = staticmethod(_capi.libei.region_unref)
 
@@ -313,6 +340,13 @@ class Region(CObject):
 
 
 class Keymap(CObject):
+    """The XKB keymap the server has assigned to a keyboard device.
+
+    Read :attr:`fd` and :attr:`size` to feed it to ``xkbcommon`` and work
+    out which keycode produces a given character -- see the module
+    docstring on why keycodes are positions rather than characters.
+    """
+
     _ref_func = staticmethod(_capi.libei.keymap_ref)
     _unref_func = staticmethod(_capi.libei.keymap_unref)
 
@@ -359,11 +393,27 @@ class Keymap(CObject):
     def device(self) -> Device:
         """The device this keymap belongs to."""
         device = Device.wrap(_capi.libei.keymap_get_device(self))
+        # wrap() is typed `T | None` because the C API's getters may
+        # return NULL in general; this one is documented never to. The
+        # assert is here to narrow the type for mypy, not to enforce an
+        # invariant -- under `python -O` it vanishes and a surprise NULL
+        # surfaces as an AttributeError on None at the caller, which is
+        # survivable. Contrast _cobject.py's cross-class pointer check,
+        # which guards memory safety and so is a real `raise`. Every
+        # other `assert ... is not None` in this module is the same
+        # narrowing idiom.
         assert device is not None
         return device
 
 
 class Touch(CObject):
+    """One touch point, from :meth:`Device.touch_new` to up or cancel.
+
+    Created per touch rather than per device, so several can be in flight
+    at once for a multi-touch gesture. Like the :class:`Device` methods,
+    the calls here only queue -- :meth:`Device.frame` commits them.
+    """
+
     _unref_func = staticmethod(_capi.libei.touch_unref)
 
     @property
@@ -400,6 +450,18 @@ class Touch(CObject):
 
 
 class Device(CObject):
+    """An input device the server has handed this client.
+
+    Never constructed directly: ask for capabilities with
+    :meth:`Seat.bind`, then take the device off the DEVICE_ADDED event and
+    wait for DEVICE_RESUMED before sending anything.
+
+    The sending methods queue an event and return ``self``, so a whole
+    input sequence chains: :meth:`start_emulating`, the events themselves,
+    :meth:`frame` to commit them as one logical hardware event, then
+    :meth:`stop_emulating`.
+    """
+
     _ref_func = staticmethod(_capi.libei.device_ref)
     _unref_func = staticmethod(_capi.libei.device_unref)
 
@@ -573,6 +635,12 @@ class Device(CObject):
 
 
 class Seat(CObject):
+    """A group of devices the server offers, arriving as SEAT_ADDED.
+
+    A seat advertises capabilities; :meth:`bind` asks for the ones you
+    want, and the server answers with devices.
+    """
+
     _ref_func = staticmethod(_capi.libei.seat_ref)
     _unref_func = staticmethod(_capi.libei.seat_unref)
 
@@ -673,6 +741,16 @@ class Ping(CObject):
 
 
 class Event(CObject):
+    """One event from :attr:`Context.events`.
+
+    :attr:`event_type` says which of the typed accessors below is valid;
+    reading the wrong one raises :class:`TypeError` rather than returning
+    the zeroes libei would hand back (see :meth:`_require`).
+
+    Valid only for the loop iteration that yielded it --
+    :attr:`Context.events` releases each event as it resumes.
+    """
+
     _unref_func = staticmethod(_capi.libei.event_unref)
 
     def __repr__(self) -> str:
@@ -722,9 +800,7 @@ class Event(CObject):
             return
         wanted = " or ".join(v.name for v in valid)
         seen = actual.name if isinstance(actual, EventType) else str(actual)
-        raise TypeError(
-            f"Event.{getter} is only valid for {wanted} events, not {seen}"
-        )
+        raise TypeError(f"Event.{getter} is only valid for {wanted} events, not {seen}")
 
     @property
     def emulating_sequence(self) -> int:
@@ -773,9 +849,7 @@ class Event(CObject):
     @property
     def pointer_absolute_event(self) -> PointerAbsoluteEvent:
         """Absolute position for a POINTER_MOTION_ABSOLUTE event."""
-        self._require(
-            "pointer_absolute_event", EventType.POINTER_MOTION_ABSOLUTE
-        )
+        self._require("pointer_absolute_event", EventType.POINTER_MOTION_ABSOLUTE)
         return PointerAbsoluteEvent(
             x=_capi.libei.event_pointer_get_absolute_x(self),
             y=_capi.libei.event_pointer_get_absolute_y(self),
@@ -907,7 +981,24 @@ def _log_callback(_ei: int, priority: int, message: bytes, _context: int) -> Non
 _log_handler = log_handler_t(_log_callback)
 
 
+# Lets the chained configuration methods below (set_name/set_fd/set_socket)
+# say "returns whatever subclass it was called on" -- annotating `self` with
+# a TypeVar is the pre-3.11 spelling of typing.Self, which this package
+# can't use while it supports Python 3.10 and ships zero dependencies.
+# Without it, Sender.create_for_fd()'s `cls(cls._new()).set_name(...)` chain
+# would be typed as plain Context and need a cast at every return.
+_ContextT = TypeVar("_ContextT", bound="Context")
+
+
 class Context(CObject):
+    """One connection to an EIS implementation; base of Sender/Receiver.
+
+    Not instantiated directly -- use :meth:`Sender.create_for_fd` or the
+    :class:`Receiver` equivalents, which allocate the context, name it and
+    set up its transport in one call. :meth:`dispatch` reads from the
+    connection and :attr:`events` drains what that queued.
+    """
+
     _unref_func = staticmethod(_capi.libei.unref)
     # Only ever created fresh via _new() inside create_for_fd()/
     # create_for_socket(), never handed out as a sub-object -- so wrap()/
@@ -928,7 +1019,7 @@ class Context(CObject):
         _capi.libei.log_set_handler(self, _log_handler)
         _capi.libei.log_set_priority(self, _LogPriority.DEBUG)
 
-    def set_name(self, name: str) -> Context:
+    def set_name(self: _ContextT, name: str) -> _ContextT:
         """Set the client name announced to the server. Call before connecting."""
         self._name = name
         _capi.libei.configure_name(self, name.encode("utf-8"))
@@ -986,7 +1077,7 @@ class Context(CObject):
         """The context's current time, in microseconds."""
         return _capi.libei.now(self)
 
-    def set_fd(self, fd: IO[bytes] | int) -> Context:
+    def set_fd(self: _ContextT, fd: IO[bytes] | int) -> _ContextT:
         """Use an already-connected socket as the transport.
 
         libei takes ownership of a raw int fd and closes it itself; a file
@@ -1004,7 +1095,7 @@ class Context(CObject):
             raise Error(os.strerror(-err), -err)
         return self
 
-    def set_socket(self, path: Path | None) -> Context:
+    def set_socket(self: _ContextT, path: Path | None) -> _ContextT:
         """Connect to an EIS socket by path.
 
         ``None`` uses ``$LIBEI_SOCKET``; a relative path is resolved
@@ -1088,14 +1179,14 @@ class Sender(Context):
     @classmethod
     def create_for_fd(cls, fd: IO[bytes] | int, name: str | None = None) -> Sender:
         """Create a context speaking EI over an already-connected fd."""
-        return cls(cls._new()).set_name(name or "unnamed").set_fd(fd)  # type: ignore[return-value]
+        return cls(cls._new()).set_name(name or "unnamed").set_fd(fd)
 
     @classmethod
     def create_for_socket(
         cls, path: Path | None = None, name: str | None = None
     ) -> Sender:
         """Create a context connecting to an EIS socket by path."""
-        return cls(cls._new()).set_name(name or "unnamed").set_socket(path)  # type: ignore[return-value]
+        return cls(cls._new()).set_name(name or "unnamed").set_socket(path)
 
 
 class Receiver(Context):
@@ -1111,14 +1202,14 @@ class Receiver(Context):
     @classmethod
     def create_for_fd(cls, fd: IO[bytes] | int, name: str | None = None) -> Receiver:
         """Create a context speaking EI over an already-connected fd."""
-        return cls(cls._new()).set_name(name or "unnamed").set_fd(fd)  # type: ignore[return-value]
+        return cls(cls._new()).set_name(name or "unnamed").set_fd(fd)
 
     @classmethod
     def create_for_socket(
         cls, path: Path | None = None, name: str | None = None
     ) -> Receiver:
         """Create a context connecting to an EIS socket by path."""
-        return cls(cls._new()).set_name(name or "unnamed").set_socket(path)  # type: ignore[return-value]
+        return cls(cls._new()).set_name(name or "unnamed").set_socket(path)
 
 
 __all__ = [

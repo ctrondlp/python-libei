@@ -31,11 +31,20 @@ class LazyLibrary:
         self._lock = threading.Lock()
 
     def _ensure_loaded(self) -> ctypes.CDLL:
+        # Double-checked: the unlocked read is the fast path taken by every
+        # call after the first, and the repeated check inside the lock is
+        # what makes it safe -- two threads can both fall through the first
+        # check, and the second one must not dlopen() again after the first
+        # has finished. The repetition is deliberate, not redundant.
         if self._lib is not None:
             return self._lib
         with self._lock:
             if self._lib is not None:
                 return self._lib
+            # A failed load is cached and re-raised rather than retried:
+            # a missing library does not appear mid-process, and retrying
+            # would pay the dlopen() cost on every call for a caller that
+            # ignores the exception in a loop.
             if self._load_error is not None:
                 raise LibraryNotFoundError(
                     f"{self._soname} is not available"
@@ -72,9 +81,18 @@ class LazyLibrary:
         actually invoked, not when this method runs -- so declaring a full
         set of bindings at module scope never touches the filesystem.
         """
+        # A one-slot dict used as a mutable cell. `call` below has to write
+        # the resolved function back somewhere the *next* call can see, and
+        # a plain `bound = ...` inside `call` would just create a local. A
+        # `nonlocal` on a variable declared here would work equally well;
+        # the dict is chosen only because "absent from the dict" already
+        # means "not resolved yet", with no None sentinel to confuse with a
+        # legitimately-None value.
         cache: dict[str, Any] = {}
 
         def call(*args: Any) -> Any:
+            # Resolution happens here, on first call, not at bind time --
+            # that is the whole point of this module (see its docstring).
             bound = cache.get("f")
             if bound is None:
                 lib = self._ensure_loaded()

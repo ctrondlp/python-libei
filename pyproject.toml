@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-libei"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Inject and receive input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis"
 readme = "README.md"
 license = "MIT"

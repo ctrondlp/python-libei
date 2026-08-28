@@ -100,7 +100,7 @@ pointer.
 
 ## Status
 
-Alpha (`0.1.0.dev0`), not yet on PyPI, and the API is not frozen — expect
+Alpha (`0.1.0`), not yet on PyPI, and the API is not frozen — expect
 renames before 1.0. What that qualifier covers, concretely:
 
 - The injection path — connect, bind, wait for a device, send events — is
@@ -113,11 +113,11 @@ renames before 1.0. What that qualifier covers, concretely:
 - The portal path (`libei.oeffis`) has only ever been verified by hand, since
   it needs an interactive consent dialog that nothing here can drive. See
   [Troubleshooting](#troubleshooting).
-- Verified against libei 1.6.0 on Fedora 44 / GNOME 50.4, on CPython 3.13;
-  the core injection path also against 1.5.0. Older versions are supported by
-  symbol analysis and per-feature version gates, not by having been run — and
-  the 1.1/1.4/1.6 features above cannot have been, since 1.6.0 is what's
-  installed here.
+- Verified against libei 1.6.0 on Fedora 44 / GNOME 50.4, and against a
+  locally built 1.2.1 (130 passed, 4 skipped — the 1.4 and 1.6 features
+  gate themselves out). CI repeats the 1.2.1 run on Python 3.10-3.13, so
+  the 1.0.0 core floor is exercised on a real old build rather than
+  asserted. 1.0-1.1 and 1.3 have still never been run against.
 
 ## Alternatives
 
@@ -608,6 +608,37 @@ For which of libei's capabilities are actually driveable, and which C
 functions are left unbound, see [What's implemented](#whats-implemented).
 
 ## Development
+
+### Architecture
+
+Four layers, bottom up. If you're reading the code for the first time, read
+them in this order -- each one only makes sense once the one below it does.
+
+| Layer | What it does |
+| --- | --- |
+| [`_capi/loader.py`](src/libei/_capi/loader.py) | `LazyLibrary`: `dlopen`s a `.so` on first *call*, not at import, so this package imports fine with no native libraries installed |
+| [`_capi/libei.py`](src/libei/_capi/libei.py), `libeis.py`, `liboeffis.py` | One line per C function, with hand-written ctypes signatures. Nothing else -- no logic |
+| [`_cobject.py`](src/libei/_cobject.py) | `CObject`: pointer ownership, refcounting, and the identity cache that every wrapper class inherits |
+| [`ei.py`](src/libei/ei.py), [`eis.py`](src/libei/eis.py), [`oeffis.py`](src/libei/oeffis.py) | The public API: Python classes, enums and dataclasses over the raw calls |
+
+**Read `_cobject.py` first.** It is the smallest file with the most
+consequence: get `wrap()` vs `adopt()`, the `staticmethod()` wrapping of
+`_ref_func`/`_unref_func`, or the `_wrappable` flag wrong and the failure is
+a use-after-free or a segfault rather than a traceback. Every non-obvious
+line there carries a comment explaining what breaks without it.
+
+Two conventions worth knowing before the code reads cleanly:
+
+- **`_capi` names drop the C prefix.** `ei_unref()` is
+  `_capi.libei.unref()`, `eis_device_configure_name()` is
+  `_capi.libeis.device_configure_name()`. The module says which library it
+  is, so repeating it in every name would only add noise.
+- **Wrapper instances are passed straight to C calls.** `CObject` defines
+  `_as_parameter_`, which ctypes consults automatically, so
+  `_capi.libei.device_frame(self, timestamp)` works without unwrapping a
+  pointer out of `self` by hand.
+
+### Setup and checks
 
 ```
 python -m venv .venv && . .venv/bin/activate

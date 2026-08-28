@@ -9,6 +9,10 @@ new fd (to be handed to a client's ``ei_setup_backend_fd(ei, fd)``); it
 doesn't accept one. This is easy to get backwards from the name alone --
 see docs/vs-snegg.md for how that showed up in practice while this was
 being worked out.
+
+Names here drop the ``eis_`` prefix the C symbols carry:
+``eis_unref()`` is bound as ``unref`` and called as
+``_capi.libeis.unref()``. The module already says which library it is.
 """
 
 from __future__ import annotations

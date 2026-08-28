@@ -1,6 +1,10 @@
 """ctypes bindings for liboeffis (portal RemoteDesktop -> EIS fd negotiation).
 
 See https://libinput.pages.freedesktop.org/libei/api/group__liboeffis.html.
+
+Names here drop the ``oeffis_`` prefix the C symbols carry:
+``oeffis_unref()`` is bound as ``unref`` and called as
+``_capi.liboeffis.unref()``. The module already says which library it is.
 """
 
 from __future__ import annotations
