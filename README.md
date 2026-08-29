@@ -701,16 +701,17 @@ Versions are SemVer and live in two places -- `pyproject.toml` and
 `src/libei/__init__.py` -- which have to agree with each other and with the
 tag. Nothing enforces that yet.
 
-A release is an annotated, `v`-prefixed tag plus a GitHub Release:
+A release is an annotated, `v`-prefixed tag. Pushing it is the whole of it;
+PyPI is the only place a release is published, and no GitHub Release is cut:
 
 ```sh
 git tag -a v0.2.0 -m "0.2.0"
 git push origin v0.2.0
-gh release create v0.2.0 --generate-notes --prerelease
 ```
 
-`--prerelease` while the API is unfrozen -- it keeps an alpha out of the
-"Latest release" slot.
+While the API is unfrozen, the pre-release signal lives in the version
+itself: a PEP 440 suffix (`0.2.0a1`) keeps a plain `pip install
+python-libei` off it, and a `0.x` version already says the API can move.
 
 Publishing runs from CI on a `v*` tag using PyPI
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC), so
