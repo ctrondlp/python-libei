@@ -100,8 +100,9 @@ pointer.
 
 ## Status
 
-Alpha (`0.1.0`), not yet on PyPI, and the API is not frozen — expect
-renames before 1.0. What that qualifier covers, concretely:
+Alpha (`0.2.0`), published on [PyPI](https://pypi.org/project/python-libei/)
+since `0.1.0`, and the API is not frozen — expect renames before 1.0. What
+that qualifier covers, concretely:
 
 - The injection path — connect, bind, wait for a device, send events — is
   exercised end-to-end against the real libraries by
@@ -161,16 +162,28 @@ renames before 1.0. What that qualifier covers, concretely:
 
 ## Install
 
-Not published to PyPI yet — install from a checkout:
+From [PyPI](https://pypi.org/project/python-libei/):
 
 ```sh
-git clone https://github.com/ctrondlp/python-libei.git
-cd python-libei
-pip install .
+pip install python-libei
 ```
 
 The distribution is named `python-libei`, the import is `libei` -- so
 `pip show python-libei`, but `from libei import ei`.
+
+Pure Python, no build step: the wheel is `py3-none-any` and ctypes talks to
+the native libraries directly, so there is no compiler, no headers and no
+`libei-devel` involved at install time. What `pip` does *not* bring is the
+native libraries themselves -- see [Requirements](#requirements) above; on
+Fedora, `sudo dnf install libei libeis liboeffis`.
+
+To track `main` instead, or to hack on it, install from a checkout:
+
+```sh
+git clone https://github.com/ctrondlp/python-libei.git
+cd python-libei
+pip install .          # or `pip install -e '.[dev]'` to develop
+```
 
 Importing is always safe, even where the native libraries are missing — they
 are loaded on first use, not at import. Check before you rely on them:
@@ -691,9 +704,9 @@ tag. Nothing enforces that yet.
 A release is an annotated, `v`-prefixed tag plus a GitHub Release:
 
 ```sh
-git tag -a v0.1.0 -m "0.1.0"
-git push origin v0.1.0
-gh release create v0.1.0 --generate-notes --prerelease
+git tag -a v0.2.0 -m "0.2.0"
+git push origin v0.2.0
+gh release create v0.2.0 --generate-notes --prerelease
 ```
 
 `--prerelease` while the API is unfrozen -- it keeps an alpha out of the
@@ -706,22 +719,24 @@ job in `ci.yml` handles it, uploading the artifacts the `build` job already
 ran `twine check` over.
 
 That job depends on two pieces of configuration outside this repository,
-which have to exist before the first tag:
+both of which are in place as of `0.1.0`:
 
-1. On pypi.org, under Account settings -> Publishing, a **pending**
-   publisher -- the flow for a project that has no releases yet. Project
-   `python-libei`, owner `ctrondlp`, repository `python-libei`, workflow
-   `ci.yml`, environment `pypi`. Every field has to match the workflow
+1. On pypi.org, a trusted publisher on the `python-libei` project: owner
+   `ctrondlp`, repository `python-libei`, workflow `ci.yml`, environment
+   `pypi`. It started life as a **pending** publisher -- the flow for a
+   project with no releases yet -- and the first upload converted it into
+   an ordinary project-level one, so a fresh project is the only case that
+   needs the pending form again. Every field has to match the workflow
    exactly; a mismatch surfaces as a rejected credential at upload time,
    not when it is saved.
 2. A GitHub environment named `pypi`, in the repository settings. A
    required reviewer on it makes each publish a deliberate approval rather
    than a side effect of pushing a tag.
 
-Worth rehearsing on TestPyPI first: separate account, separate pending
-publisher, and `repository-url: https://test.pypi.org/legacy/` on the
-publish step. PyPI filenames are immutable, so a bad upload can only be
-yanked and superseded by a new version, never replaced.
+PyPI filenames are immutable, so a bad upload can only be yanked and
+superseded by a new version, never replaced -- worth rehearsing anything
+unusual on TestPyPI first (separate account, separate pending publisher,
+and `repository-url: https://test.pypi.org/legacy/` on the publish step).
 
 ## Design notes
 

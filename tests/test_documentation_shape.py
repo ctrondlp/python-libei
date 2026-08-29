@@ -94,9 +94,16 @@ def test_examples_pump_dispatch_before_draining_events() -> None:
         )
 
 
-def test_readme_install_command_is_not_a_broken_pypi_reference() -> None:
-    # The package is not on PyPI; `pip install python-libei` fails.
-    assert "pip install python-libei" not in _README.read_text()
+def test_readme_documents_the_pypi_install() -> None:
+    # The package is on PyPI as of 0.1.0, so the plain install has to be
+    # the one a reader sees first. This guard used to assert the opposite;
+    # it is inverted rather than deleted so that dropping the PyPI
+    # instruction is a test failure, not a silent regression to a checkout.
+    readme = _README.read_text()
+    assert "pip install python-libei" in readme
+    assert readme.index("pip install python-libei") < readme.index(
+        "git clone https://github.com/ctrondlp/python-libei.git"
+    ), "the checkout install is documented before the PyPI one"
 
 
 def test_readme_only_references_real_public_api() -> None:

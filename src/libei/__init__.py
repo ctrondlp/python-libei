@@ -26,6 +26,6 @@ the full breakdown, including which features need which libei version.
 Alpha: the API is not frozen.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]
