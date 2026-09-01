@@ -157,10 +157,10 @@ def _gio() -> tuple[Any, Any] | None:
     package follows. See is_available().
     """
     try:
-        import gi  # type: ignore[import-untyped]
+        import gi
 
         gi.require_version("Gio", "2.0")
-        from gi.repository import Gio, GLib  # type: ignore[import-untyped]
+        from gi.repository import Gio, GLib
     except Exception:
         return None
     return Gio, GLib

@@ -101,3 +101,12 @@ strict = true
 # Every property in ei.py/eis.py/oeffis.py re-types a raw C call's result,
 # so this fires everywhere in the wrapper layer for no actionable reason.
 warn_return_any = false
+
+# PyGObject is an optional extra (see [project.optional-dependencies].portal),
+# so `gi` may or may not be importable where mypy runs. Without this, the two
+# error codes differ by environment -- import-untyped when PyGObject is
+# installed, import-not-found when it isn't -- and an inline ignore pinned to
+# either one fails in the other. libei.portal already treats gi as Any.
+[[tool.mypy.overrides]]
+module = ["gi.*"]
+ignore_missing_imports = true
