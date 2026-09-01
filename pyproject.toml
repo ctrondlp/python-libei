@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-libei"
-version = "0.2.0"
+version = "0.3.0"
 description = "Inject and receive input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis"
 readme = "README.md"
 license = "MIT"
@@ -50,12 +50,18 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+# libei.portal negotiates the RemoteDesktop portal directly over D-Bus, which
+# needs PyGObject for Gio/GLib. The native GObject-introspection libraries
+# still have to come from the distro -- PyPI's PyGObject wheel only supplies
+# the Python side. Not needed for libei.ei/libei.eis/libei.oeffis.
+portal = ["PyGObject>=3.42"]
 dev = ["pytest>=7", "ruff>=0.6", "mypy>=1.11"]
 
 [project.urls]
 homepage = "https://github.com/ctrondlp/python-libei"
 repository = "https://github.com/ctrondlp/python-libei"
 issues = "https://github.com/ctrondlp/python-libei/issues"
+changelog = "https://github.com/ctrondlp/python-libei/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -100,7 +100,7 @@ pointer.
 
 ## Status
 
-Alpha (`0.2.0`), published on [PyPI](https://pypi.org/project/python-libei/)
+Alpha (`0.3.0`), published on [PyPI](https://pypi.org/project/python-libei/)
 since `0.1.0`, and the API is not frozen — expect renames before 1.0. What
 that qualifier covers, concretely:
 
@@ -111,9 +111,20 @@ that qualifier covers, concretely:
 - Text input, touch cancellation, ping/pong, keymap transfer, region mapping
   ids and `peek_event_type()` are each round-tripped through a real libeis
   server in `tests/test_integration_extras.py`.
-- The portal path (`libei.oeffis`) has only ever been verified by hand, since
-  it needs an interactive consent dialog that nothing here can drive. See
-  [Troubleshooting](#troubleshooting).
+- Both portal paths (`libei.oeffis` and `libei.portal`) can only ever be
+  verified by hand, since they need an interactive consent dialog that
+  nothing here can drive automatically — `tests/test_portal.py` covers
+  `libei.portal`'s orchestration (raceless subscribe-before-call, the
+  `session_handle_token` crash workaround, persist_mode/restore_token)
+  against a fake D-Bus connection only. `libei.oeffis` was verified by hand
+  on 2026-08-25 (see [Troubleshooting](#troubleshooting)), and
+  `libei.portal` on 2026-09-01 against a real GNOME Wayland session
+  (`RemoteDesktop` v2): a first run raised the consent dialog and was
+  approved (5.4s), a second replaying the `restore_token` was granted with
+  no dialog at all (0.2s), three devices resumed on the returned fd
+  (relative pointer, keyboard, absolute pointer — in that order, the device
+  race `ei`-side callers must handle), and `Session.Close()` was exercised.
+  No input was injected — emulation is `libei.ei`'s job.
 - Verified against libei 1.6.0 on Fedora 44 / GNOME 50.4, and against a
   locally built 1.2.1 (130 passed, 4 skipped — the 1.4 and 1.6 features
   gate themselves out). CI repeats the 1.2.1 run on Python 3.10-3.13, so
@@ -125,7 +136,7 @@ that qualifier covers, concretely:
 | Instead of this | Why you might |
 | --- | --- |
 | [snegg](https://gitlab.freedesktop.org/whot/snegg) | The reference bindings, by libei's own author — closer to upstream, and first to get new API. Self-described as for "rapid prototyping" with an explicitly unstable API, and `import snegg.ei` fails outright where libei isn't installed. [`docs/vs-snegg.md`](docs/vs-snegg.md) covers the differences in detail. |
-| The portal's D-Bus API directly (`org.freedesktop.portal.RemoteDesktop`, via Gio or dbus-python) | No native library and no bindings at all — `NotifyPointerMotion`, `NotifyKeyboardKeycode` and friends are plain method calls. The catch is absolute motion: `NotifyPointerMotionAbsolute` needs a PipeWire stream id, which only exists after a second, separate ScreenCast consent dialog. libei has no such requirement. |
+| The RemoteDesktop portal's own D-Bus API directly (`NotifyPointerMotion`, `NotifyKeyboardKeycode`, …), bypassing libei/EI entirely | `libei.portal` already gets you the D-Bus session and its `persist_mode`/`restore_token` handling — reach past libei entirely only if you don't want the EI protocol at all. The catch if you do: `NotifyPointerMotionAbsolute` needs a PipeWire stream id, which only exists after a second, separate ScreenCast consent dialog. libei has no such requirement. |
 | `ydotool` and other `/dev/uinput` tools | Kernel-level, so they work under any compositor and need no portal session — at the cost of a privileged daemon, and of sidestepping the consent model that EI exists to enforce. |
 
 ## Requirements
@@ -133,6 +144,10 @@ that qualifier covers, concretely:
 - Linux with a Wayland compositor (GNOME, KDE, Sway, …)
 - CPython 3.10 or newer (tested on 3.13)
 - The native libraries: on Fedora, `sudo dnf install libei libeis liboeffis`
+- `libei.portal` only: PyGObject (`pip install 'python-libei[portal]'`), plus
+  whatever GObject-introspection libraries your distro needs for `Gio` --
+  PyPI's PyGObject wheel supplies the Python side only. Not needed for
+  `libei.ei`, `libei.eis` or `libei.oeffis`.
 - libei 1.0.0 or newer for the core: connecting, binding a seat, and
   sending pointer, button, keyboard, scroll and touch input all use symbols
   that have existed with a stable signature since 1.0.0, and upstream keeps
@@ -268,23 +283,59 @@ several devices — see the absolute-positioning notes under
 call and exposes no options dict, so the two things that make an approval
 persist — `persist_mode` on `SelectDevices`, and the `restore_token` that
 comes back on `Start` — are unreachable through it. This is a limitation of
-the C library, not of these bindings; there is nothing here left to bind.
+the C library, not of these bindings; upstream's own docs say as much:
+liboeffis is "intentionally kept simple, any more complex needs should be
+handled by an application talking to DBus directly"
+([source](https://libinput.pages.freedesktop.org/libei/api/group__liboeffis.html)).
 
-What works is negotiating the portal yourself over D-Bus and handing the
-resulting fd to `Sender.create_for_fd()`, which does not care where the fd
-came from:
+`libei.portal` is that: the same `CreateSession` → `SelectDevices` → `Start`
+→ `ConnectToEIS` sequence, driven directly over D-Bus (needs PyGObject —
+`pip install 'python-libei[portal]'`), with `persist_mode`/`restore_token`
+as real parameters:
 
-1. `CreateSession` on `org.freedesktop.portal.RemoteDesktop`
-2. `SelectDevices` with `persist_mode` (1 = while running, 2 = until
-   revoked) and, on later runs, the saved `restore_token`
-3. `Start` — the response carries a fresh `restore_token`, which you store
-4. `ConnectToEIS` — the fd for `ei.Sender.create_for_fd()`
+```python
+from libei import ei, portal
+
+with portal.RemoteDesktopSession.negotiate(
+    devices=portal.DeviceType.POINTER,
+    persist_mode=portal.PersistMode.UNTIL_REVOKED,
+    restore_token=saved_token,  # None on the first run
+) as session:
+    save_somewhere(session.restore_token)  # a fresh token every time -- save it
+    sender = ei.Sender.create_for_fd(session.eis_fd, name="my-app")
+    ...  # inject input for as long as the session is needed
+```
 
 Save the token somewhere durable and pass it back next time; the portal then
 restores the session without prompting. Treat it as a credential — anyone
 holding it can reopen input injection on that desktop, so it belongs
 wherever you'd keep a password, and the decision to store it at all belongs
-to the application rather than to a library.
+to the application rather than to this library, which never writes it
+anywhere itself.
+
+Save whatever comes back on **every** run, not just the first: the portal is
+free to hand back a different token each time, and a caller that keeps only
+the original would eventually present a stale one. (On GNOME the same token
+comes back on each restore — that is one portal's behaviour, not a
+guarantee.) Passing `restore_token` *without* a `persist_mode` raises
+`ValueError`: the portal answers such a request with no token at all, so
+storing what came back would write `None` over the token you just spent.
+
+Three differences from `Oeffis` above worth knowing:
+
+- **Blocking, not event-driven.** `negotiate()` runs its own nested
+  `GLib.MainLoop` per D-Bus round trip and returns only once connected, or
+  raises `PortalVersionError` / `PortalDeniedError` / `PortalTimeoutError`.
+- **Bounded.** Each round trip gets `timeout` seconds (60 by default —
+  generous, since `Start` waits on a human answering a dialog). Without it a
+  portal that dies after accepting the call would wedge the calling thread
+  forever, which is the one thing `Oeffis`'s pollable fd protects against.
+- **Close it.** The portal session lives in xdg-desktop-portal and outlives
+  the object unless `Session.Close()` is called — `Gio.bus_get_sync()` hands
+  back GLib's *shared* connection, so dropping the session tears nothing
+  down, and a long-running process that negotiates repeatedly accumulates
+  live sessions. The `with` block above handles it; otherwise call
+  `session.close()`.
 
 ## Sending input
 
@@ -613,6 +664,7 @@ the capability you bound (`seat.capabilities`).
 | `libei.ei` | Clients: `Sender` (inject), `Receiver` (consume) |
 | `libei.eis` | Servers: `Eis`, for compositors and for testing clients |
 | `libei.oeffis` | Getting an EI fd from the desktop portal |
+| `libei.portal` | The same, over D-Bus directly, with `persist_mode`/`restore_token` |
 
 Each module has `is_available()`, an `Error` exception, and an `EventType` /
 `DeviceCapability` enum. `ei` and `eis` also share the shapes around them:
@@ -636,6 +688,12 @@ them in this order -- each one only makes sense once the one below it does.
 | [`_capi/libei.py`](src/libei/_capi/libei.py), `libeis.py`, `liboeffis.py` | One line per C function, with hand-written ctypes signatures. Nothing else -- no logic |
 | [`_cobject.py`](src/libei/_cobject.py) | `CObject`: pointer ownership, refcounting, and the identity cache that every wrapper class inherits |
 | [`ei.py`](src/libei/ei.py), [`eis.py`](src/libei/eis.py), [`oeffis.py`](src/libei/oeffis.py) | The public API: Python classes, enums and dataclasses over the raw calls |
+
+[`portal.py`](src/libei/portal.py) sits outside this stack entirely -- there
+is no C library behind it, so no `_capi` binding and no `CObject`. It talks
+D-Bus directly through PyGObject (`Gio`/`GLib`, imported lazily the same way
+the C libraries are loaded lazily) and only ever produces a plain fd, which
+is where it hands off to `ei.Sender.create_for_fd()`.
 
 **Read `_cobject.py` first.** It is the smallest file with the most
 consequence: get `wrap()` vs `adopt()`, the `staticmethod()` wrapping of

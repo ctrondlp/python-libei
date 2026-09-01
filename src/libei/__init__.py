@@ -13,6 +13,9 @@ Use the submodules directly:
   drive a test harness for the ``ei`` module without a real compositor)
 - :mod:`libei.oeffis` -- negotiate an EI connection through the
   ``org.freedesktop.portal.RemoteDesktop`` XDG desktop portal
+- :mod:`libei.portal` -- negotiate that same portal directly over D-Bus
+  instead, for ``persist_mode``/``restore_token`` support liboeffis's C API
+  doesn't expose
 
 Scope, in short: this needs a compositor speaking EI/EIS -- there is no X11
 fallback. Pointer (relative and absolute), button, keyboard, scroll, touch
@@ -26,6 +29,6 @@ the full breakdown, including which features need which libei version.
 Alpha: the API is not frozen.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["__version__"]
