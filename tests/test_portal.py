@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import types
 from collections.abc import Iterator
 from typing import Any
@@ -54,7 +55,18 @@ class FakeUnixFDList:
 
 
 class FakeGLibError(Exception):
-    """Stands in for `GLib.Error`, which every GDBus failure arrives as."""
+    """Stands in for `GLib.Error`, which every GDBus failure arrives as.
+
+    `domain` and `code` are what portal._is_reply_timeout reads to tell
+    GDBus's own reply timeout from every other D-Bus failure. They default
+    to values that match nothing, so a bare FakeGLibError still stands for
+    "some other failure" as it did before.
+    """
+
+    def __init__(self, message: str = "", domain: str = "", code: int = 0) -> None:
+        super().__init__(message)
+        self.domain = domain
+        self.code = code
 
 
 _OPEN_PIPES: list[tuple[int, int]] = []
@@ -97,6 +109,9 @@ class FakeMainLoop:
     """
 
     pending_timeout: Any = None
+    # What GLib.timeout_add was asked to wait, so a test can check the
+    # Response leg got only the time the call leg left of the deadline.
+    pending_timeout_msec: int | None = None
 
     def __init__(self) -> None:
         self._quit = False
@@ -141,6 +156,9 @@ class FakeConnection:
         self.version = version
         self.fd_responses = fd_responses or {"ConnectToEIS": _fresh_fd()}
         self.calls: list[tuple[str, Any]] = []
+        # Kept separate from `calls`, whose two-tuple shape several tests
+        # compare against exactly: (method, bus name, object path, timeout).
+        self.call_targets: list[tuple[str, Any, Any, Any]] = []
         self._unique_name = unique_name
         self._subscriptions: dict[str, Any] = {}
         self._pending_reply: tuple[str, int, dict[str, Any]] | None = None
@@ -168,6 +186,7 @@ class FakeConnection:
         # `parameters` is None for a method that takes no arguments, which
         # is exactly what real Gio expects and what Session.Close() sends.
         self.calls.append((method, None if parameters is None else parameters.value))
+        self.call_targets.append((method, bus_name, object_path, timeout))
         if parameters is None:
             return FakeReply(())
         if method == "Get":
@@ -242,6 +261,7 @@ class FakeConnection:
         cancellable: Any,
     ) -> tuple[FakeReply, FakeUnixFDList]:
         self.calls.append((method, parameters.value))
+        self.call_targets.append((method, bus_name, object_path, timeout))
         return FakeReply((0,)), FakeUnixFDList(self.fd_responses[method])
 
 
@@ -254,6 +274,9 @@ def install_fake_gi(connection: FakeConnection | None = None) -> Any:
     Gio.BusType = types.SimpleNamespace(SESSION=1)  # type: ignore[attr-defined]
     Gio.DBusCallFlags = types.SimpleNamespace(NONE=0)  # type: ignore[attr-defined]
     Gio.DBusSignalFlags = types.SimpleNamespace(NONE=0)  # type: ignore[attr-defined]
+    # 24 is G_IO_ERROR_TIMED_OUT, the code a real call_sync() raises in the
+    # g-io-error-quark domain when its reply never comes.
+    Gio.IOErrorEnum = types.SimpleNamespace(TIMED_OUT=24)  # type: ignore[attr-defined]
     Gio.bus_get_sync = (  # type: ignore[attr-defined]
         lambda *a, **kw: connection or FakeConnection()
     )
@@ -268,8 +291,9 @@ def install_fake_gi(connection: FakeConnection | None = None) -> Any:
 
     # timeout_add stashes the callback rather than scheduling it; only the
     # timeout tests, which never quit() the loop, actually let it fire.
-    def timeout_add(_ms: int, callback: Any) -> int:
+    def timeout_add(ms: int, callback: Any) -> int:
         FakeMainLoop.pending_timeout = callback
+        FakeMainLoop.pending_timeout_msec = ms
         return 1
 
     def source_remove(_id: int) -> None:
@@ -630,3 +654,266 @@ def test_a_failed_session_close_does_not_propagate() -> None:
     with install_fake_gi(connection):
         session = portal.RemoteDesktopSession.negotiate(connection=connection)
         session.close()  # must not raise
+
+
+def _closed_sessions(connection: FakeConnection) -> list[Any]:
+    """Object paths ``Session.Close()`` was called on, in order."""
+    return [call[2] for call in connection.call_targets if call[0] == "Close"]
+
+
+class _SilentAfterCreateConnection(FakeConnection):
+    """Answers CreateSession, then accepts Start and never responds.
+
+    Stands in for a portal that dies (or a compositor whose dialog never
+    returns) after a session already exists -- the case where a caller is
+    left holding nothing at all, since `negotiate` raises rather than
+    returning the object whose `close()` would clean up.
+    """
+
+    def call_sync(
+        self,
+        bus_name: Any,
+        object_path: Any,
+        interface: Any,
+        method: str,
+        parameters: FakeVariant | None,
+        reply_type: Any,
+        flags: Any,
+        timeout: Any,
+        cancellable: Any,
+    ) -> FakeReply:
+        if method == "Start":
+            self.calls.append((method, parameters.value if parameters else None))
+            self.call_targets.append((method, bus_name, object_path, timeout))
+            return FakeReply(())  # accepted, but no Response ever fires
+        return super().call_sync(
+            bus_name,
+            object_path,
+            interface,
+            method,
+            parameters,
+            reply_type,
+            flags,
+            timeout,
+            cancellable,
+        )
+
+
+def test_a_declined_select_devices_closes_the_portal_session() -> None:
+    # CreateSession has already created a session inside xdg-desktop-portal
+    # by this point, and nothing else will ever close it: negotiate() raises
+    # instead of returning the object whose close() would, and the session
+    # outlives the failure on the shared session-bus connection.
+    connection = FakeConnection(
+        responses={
+            "CreateSession": (0, {"session_handle": "/session/1"}),
+            "SelectDevices": (1, {}),
+        }
+    )
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalDeniedError):
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_a_declined_start_closes_the_portal_session() -> None:
+    # The most likely failure of the lot: the user says no to the consent
+    # dialog. An approved-then-declined session left open is a grant the
+    # portal keeps listing for a process that gave up on it.
+    connection = FakeConnection(
+        responses={
+            "CreateSession": (0, {"session_handle": "/session/1"}),
+            "SelectDevices": (0, {}),
+            "Start": (1, {}),
+        }
+    )
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalDeniedError):
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_a_timed_out_request_closes_the_portal_session() -> None:
+    connection = _SilentAfterCreateConnection()
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalTimeoutError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection, timeout=0.01)
+    assert excinfo.value.step == "Start"
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_a_failed_connect_to_eis_closes_the_portal_session() -> None:
+    # The last step, and the one with no Request of its own: a session that
+    # was fully approved and then failed to hand back an EIS fd is still a
+    # session, and still has to be closed.
+    class NoEisConnection(FakeConnection):
+        def call_with_unix_fd_list_sync(
+            self, *args: Any, **kwargs: Any
+        ) -> tuple[FakeReply, FakeUnixFDList]:
+            raise FakeGLibError("org.freedesktop.DBus.Error.Failed")
+
+    connection = NoEisConnection()
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalError, match="D-Bus"):
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_an_interrupted_consent_dialog_closes_the_portal_session() -> None:
+    # Why the cleanup catches BaseException: Start blocks on a human, so
+    # Ctrl-C during that wait is a routine way out of negotiate() -- and it
+    # strands an approved session exactly as a decline does.
+    class InterruptedConnection(FakeConnection):
+        def call_sync(
+            self,
+            bus_name: Any,
+            object_path: Any,
+            interface: Any,
+            method: str,
+            parameters: FakeVariant | None,
+            reply_type: Any,
+            flags: Any,
+            timeout: Any,
+            cancellable: Any,
+        ) -> FakeReply:
+            if method == "Start":
+                raise KeyboardInterrupt
+            return super().call_sync(
+                bus_name,
+                object_path,
+                interface,
+                method,
+                parameters,
+                reply_type,
+                flags,
+                timeout,
+                cancellable,
+            )
+
+    connection = InterruptedConnection()
+    with install_fake_gi(connection):
+        with pytest.raises(KeyboardInterrupt):
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_a_successful_negotiation_closes_nothing() -> None:
+    # The other half of the cleanup: a session that negotiated fine belongs
+    # to the caller until they close it.
+    connection = FakeConnection()
+    with install_fake_gi(connection):
+        session = portal.RemoteDesktopSession.negotiate(connection=connection)
+        assert _closed_sessions(connection) == []
+        session.close()
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_a_missing_session_handle_raises_portal_error() -> None:
+    # Approved, but with nothing to address the rest of the sequence to.
+    # A direct index would raise KeyError straight past `except PortalError`.
+    connection = FakeConnection(responses={"CreateSession": (0, {})})
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalError, match="session_handle"):
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    # And nothing to close: no handle means no session to end.
+    assert _closed_sessions(connection) == []
+
+
+def test_the_session_is_closed_on_the_bus_name_it_was_negotiated_on() -> None:
+    # A session created on an alternate portal name has to be closed on
+    # that same name; sending Session.Close() to the default bus name
+    # reaches a portal that never heard of this session.
+    connection = FakeConnection()
+    with install_fake_gi(connection):
+        session = portal.RemoteDesktopSession.negotiate(
+            connection=connection, busname="org.example.Portal"
+        )
+        session.close()
+    closes = [call for call in connection.call_targets if call[0] == "Close"]
+    assert [call[1] for call in closes] == ["org.example.Portal"]
+
+
+def test_a_failed_negotiation_closes_on_the_bus_name_it_used() -> None:
+    connection = FakeConnection(
+        responses={
+            "CreateSession": (0, {"session_handle": "/session/1"}),
+            "SelectDevices": (1, {}),
+        }
+    )
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalDeniedError):
+            portal.RemoteDesktopSession.negotiate(
+                connection=connection, busname="org.example.Portal"
+            )
+    closes = [call for call in connection.call_targets if call[0] == "Close"]
+    assert [call[1] for call in closes] == ["org.example.Portal"]
+
+
+def test_every_negotiation_call_is_bounded_by_the_callers_timeout() -> None:
+    # GDBus's -1 is not "no timeout" (that is G_MAXINT) but GIO's own 25s
+    # default -- a number this module never chose and a caller cannot see.
+    # Every leg carries the timeout the caller asked for instead, including
+    # ConnectToEIS, which returns no Request and so has no Response leg of
+    # its own for the nested loop to bound.
+    connection = FakeConnection()
+    with install_fake_gi(connection):
+        portal.RemoteDesktopSession.negotiate(connection=connection, timeout=12.0)
+    timeouts = {call[0]: call[3] for call in connection.call_targets}
+    assert timeouts["Get"] == 12_000
+    assert timeouts["ConnectToEIS"] == 12_000
+    # The Request-returning legs draw on a shared deadline, so they get at
+    # most the full timeout, never more, and never GIO's default.
+    for method in ("CreateSession", "SelectDevices", "Start"):
+        assert 0 < timeouts[method] <= 12_000
+
+
+def test_the_response_wait_gets_only_what_the_call_leg_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One deadline covers the whole round trip. Bounding each leg by the
+    # full timeout separately would let a request that spent 4s getting its
+    # handle wait another 10s for the Response -- 14 seconds, asked for 10.
+    class Clock:
+        def __init__(self) -> None:
+            self.now = 100.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = Clock()
+
+    class SlowCallConnection(_SilentAfterCreateConnection):
+        """Takes 4s to answer Start, then never sends a Response."""
+
+        def call_sync(self, *args: Any, **kwargs: Any) -> FakeReply:
+            reply = super().call_sync(*args, **kwargs)
+            if args[3] == "Start":
+                clock.now += 4.0
+            return reply
+
+    # portal.py reads the stdlib clock directly, so this is the one to
+    # replace -- and replacing it beats sleeping for the real 4 seconds.
+    monkeypatch.setattr(time, "monotonic", clock)
+    connection = SlowCallConnection()
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalTimeoutError):
+            portal.RemoteDesktopSession.negotiate(connection=connection, timeout=10.0)
+    assert FakeMainLoop.pending_timeout_msec == 6_000
+
+
+def test_a_dbus_reply_timeout_raises_portal_timeout_error() -> None:
+    # GDBus reports its own reply timeout as G_IO_ERROR_TIMED_OUT in the
+    # g-io-error-quark domain -- not as an org.freedesktop.DBus.Error.*
+    # code -- and it means what the nested loop's timeout means: nobody
+    # answered in time. So it raises what a caller catches for that.
+    class TimingOutConnection(FakeConnection):
+        def call_sync(self, *args: Any, **kwargs: Any) -> FakeReply:
+            raise FakeGLibError(
+                "Timeout was reached", domain="g-io-error-quark", code=24
+            )
+
+    connection = TimingOutConnection()
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalTimeoutError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection, timeout=30.0)
+    assert excinfo.value.step == "Get"

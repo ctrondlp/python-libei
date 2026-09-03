@@ -100,7 +100,7 @@ pointer.
 
 ## Status
 
-Alpha (`0.3.0`), published on [PyPI](https://pypi.org/project/python-libei/)
+Beta (`0.4.0`), published on [PyPI](https://pypi.org/project/python-libei/)
 since `0.1.0`, and the API is not frozen — expect renames before 1.0. What
 that qualifier covers, concretely:
 
@@ -115,7 +115,8 @@ that qualifier covers, concretely:
   verified by hand, since they need an interactive consent dialog that
   nothing here can drive automatically — `tests/test_portal.py` covers
   `libei.portal`'s orchestration (raceless subscribe-before-call, the
-  `session_handle_token` crash workaround, persist_mode/restore_token)
+  `session_handle_token` crash workaround, persist_mode/restore_token, and
+  closing the portal session on a negotiation that fails part-way)
   against a fake D-Bus connection only. `libei.oeffis` was verified by hand
   on 2026-08-25 (see [Troubleshooting](#troubleshooting)), and
   `libei.portal` on 2026-09-01 against a real GNOME Wayland session

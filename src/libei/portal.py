@@ -63,6 +63,7 @@ from __future__ import annotations
 import enum
 import logging
 import os
+import time
 import uuid
 from typing import Any
 
@@ -94,6 +95,23 @@ _DEFAULT_TIMEOUT = 60.0
 to see and answer the consent dialog `Start` raises -- but bounded, because
 the alternative is a caller wedged forever if the portal dies after
 accepting the call and before sending its `Response`."""
+
+_GIO_DEFAULT_TIMEOUT_MSEC = 25_000
+"""What GDBus's ``-1`` reply timeout actually is.
+
+``call_sync(..., -1, ...)`` does not mean "wait forever" -- that is
+``G_MAXINT`` -- it means GIO's own default, which is 25 seconds. Only used
+to report the right number when a call left on that default runs out of
+time; see `_call_sync`."""
+
+_G_IO_ERROR_DOMAIN = "g-io-error-quark"
+"""The GLib error domain GDBus reports its own reply timeout in.
+
+Not one of the ``org.freedesktop.DBus.Error.*`` codes, as one might expect:
+a ``call_sync()`` whose reply never arrives raises ``G_IO_ERROR_TIMED_OUT``
+in this domain with the message "Timeout was reached" (checked against a
+service that accepts a call and then deliberately never answers). See
+`_is_reply_timeout`."""
 
 _ALL_DEVICE_TYPES = DeviceType.KEYBOARD | DeviceType.POINTER | DeviceType.TOUCHSCREEN
 """Every bit the RemoteDesktop `types` bitmask defines.
@@ -189,6 +207,43 @@ def _glib_error(GLib: Any) -> Any:
     return getattr(GLib, "Error", ())
 
 
+def _is_reply_timeout(Gio: Any, exc: Exception) -> bool:
+    """Whether a GDBus failure is its own reply timeout expiring.
+
+    Worth telling apart from every other ``GLib.Error``, because it means
+    exactly what the nested loop's own timeout means -- nobody answered in
+    the time allowed -- and so should raise the `PortalTimeoutError` a
+    caller is documented to catch for that, not a generic `PortalError`.
+
+    Defensive throughout: a test double standing in for ``Gio`` need not
+    define ``IOErrorEnum``, and one standing in for ``GLib.Error`` need not
+    carry a domain or a code. An attribute that isn't there just means
+    "not a timeout", which is the safe answer -- the failure still reaches
+    the caller, only as the more general error.
+    """
+    timed_out = getattr(getattr(Gio, "IOErrorEnum", None), "TIMED_OUT", None)
+    if timed_out is None:
+        return False
+    return (
+        getattr(exc, "domain", None) == _G_IO_ERROR_DOMAIN
+        and getattr(exc, "code", None) == timed_out
+    )
+
+
+def _msec_until(deadline: float) -> int:
+    """Milliseconds left before ``deadline``, never negative.
+
+    Both legs of a round trip -- the call that returns the request handle,
+    then the wait for its ``Response`` signal -- draw down the same
+    deadline, so ``timeout`` bounds the round trip rather than each half of
+    it separately, which would let a slow first leg quietly double the wait
+    a caller asked for. Zero is a legitimate answer: GLib fires a 0ms
+    timeout on the next main-loop iteration, which is the right thing for a
+    deadline that has already passed.
+    """
+    return max(0, int((deadline - time.monotonic()) * 1000))
+
+
 def _call_sync(
     connection: Any,
     Gio: Any,
@@ -199,6 +254,7 @@ def _call_sync(
     method: str,
     parameters: Any,
     reply_type: Any,
+    timeout_msec: int = -1,
 ) -> Any:
     """``call_sync``, with GDBus failures translated to `PortalError`.
 
@@ -206,6 +262,13 @@ def _call_sync(
     no-portal-backend cases -- exactly the ones `is_available()` documents
     as surfacing here, since it deliberately checks neither -- escape a
     caller's `except PortalError`.
+
+    ``timeout_msec`` is GDBus's own reply timeout, and defaults to its
+    ``-1`` -- GIO's 25 seconds (see `_GIO_DEFAULT_TIMEOUT_MSEC`), which is
+    what `RemoteDesktopSession.close` leaves it at, having no caller-facing
+    timeout to honour. Anything reached from `negotiate` passes the
+    caller's own ``timeout`` instead, so that the bound on a round trip is
+    the documented one rather than a number this module never chose.
     """
     try:
         return connection.call_sync(
@@ -216,11 +279,45 @@ def _call_sync(
             parameters,
             reply_type,
             Gio.DBusCallFlags.NONE,
-            -1,
+            timeout_msec,
             None,
         )
     except _glib_error(GLib) as exc:
+        if _is_reply_timeout(Gio, exc):
+            expired = timeout_msec if timeout_msec >= 0 else _GIO_DEFAULT_TIMEOUT_MSEC
+            raise PortalTimeoutError(method, expired / 1000) from exc
         raise PortalError(f"{method} failed on the D-Bus: {exc}") from exc
+
+
+def _close_session(
+    connection: Any,
+    Gio: Any,
+    GLib: Any,
+    busname: str,
+    session_handle: str,
+) -> None:
+    """Call ``Session.Close()``, logging rather than raising on failure.
+
+    Shared by `RemoteDesktopSession.close` and `negotiate`'s failure path,
+    which need the same thing of it: the session may already be gone (the
+    portal restarted, the user revoked the grant), and neither a caller
+    tidying up nor an exception already unwinding is helped by a second
+    failure thrown over the top of the first.
+    """
+    try:
+        _call_sync(
+            connection,
+            Gio,
+            GLib,
+            busname,
+            session_handle,
+            _SESSION_INTERFACE,
+            "Close",
+            None,
+            None,
+        )
+    except PortalError as exc:
+        logger.debug("closing the portal session failed: %s", exc)
 
 
 def _returned_handle(reply: Any) -> str | None:
@@ -269,11 +366,16 @@ def _request(
     call at all -- the pattern xdg-desktop-portal's own documentation
     describes.
 
-    Raises :class:`PortalTimeoutError` if no ``Response`` arrives within
-    ``timeout``. The nested loop is otherwise unbounded, and a portal that
-    dies after accepting the call sends no ``Response`` and no error --
-    leaving the caller wedged with nothing to poll and no way out.
+    Raises :class:`PortalTimeoutError` if the whole round trip -- the call
+    that returns the request handle, then the ``Response`` that answers it
+    -- exceeds ``timeout``. The nested loop is otherwise unbounded, and a
+    portal that dies after accepting the call sends no ``Response`` and no
+    error, leaving the caller wedged with nothing to poll and no way out.
+    Both legs share one deadline (see `_msec_until`), since a caller asking
+    for 60 seconds means the answer arrives inside 60 seconds, not inside
+    however many 60-second waits the sequence happens to be built from.
     """
+    deadline = time.monotonic() + timeout
     unique_name = connection.get_unique_name()
     escaped_sender = unique_name[1:].replace(".", "_")
     token = uuid.uuid4().hex
@@ -337,6 +439,7 @@ def _request(
             method,
             parameters,
             None,
+            _msec_until(deadline),
         )
         # The spec says the handle the call returns matches the path derived
         # from our own handle_token, but a portal is free to hand back
@@ -353,7 +456,7 @@ def _request(
         # is not running yet does not stop the later run(), so running it
         # then would block with the reply already delivered.
         if not result:
-            timeout_source = GLib.timeout_add(int(timeout * 1000), on_timeout)
+            timeout_source = GLib.timeout_add(_msec_until(deadline), on_timeout)
             try:
                 loop.run()
             finally:
@@ -377,12 +480,18 @@ def _call_for_fd(
     interface: str,
     method: str,
     session_handle: str,
+    timeout: float,
 ) -> int:
     """Call a method that returns a fd via a GUnixFDList index.
 
     The fd that comes back is *owned* -- `g_unix_fd_list_get()` dups it --
     so whoever receives it has to close it. See
     :meth:`RemoteDesktopSession.close`.
+
+    ``ConnectToEIS`` returns no `Request`, so there is no ``Response`` to
+    wait on and nothing here beyond the call itself -- but it is a call to
+    the same portal that just made the caller wait on a consent dialog, so
+    it is bounded by the same ``timeout`` rather than by GIO's default.
     """
     try:
         reply, fd_list = connection.call_with_unix_fd_list_sync(
@@ -393,17 +502,22 @@ def _call_for_fd(
             GLib.Variant("(oa{sv})", (session_handle, {})),
             GLib.VariantType.new("(h)"),
             Gio.DBusCallFlags.NONE,
-            -1,
+            int(timeout * 1000),
             None,
             None,
         )
     except _glib_error(GLib) as exc:
+        if _is_reply_timeout(Gio, exc):
+            raise PortalTimeoutError(method, timeout) from exc
         raise PortalError(f"{method} failed on the D-Bus: {exc}") from exc
     (handle_index,) = reply.unpack()
     return fd_list.get(handle_index)
 
 
-def _remote_desktop_version(connection: Any, Gio: Any, GLib: Any, busname: str) -> int:
+def _remote_desktop_version(
+    connection: Any, Gio: Any, GLib: Any, busname: str, timeout: float
+) -> int:
+    """Read the RemoteDesktop portal's ``version`` property."""
     reply = _call_sync(
         connection,
         Gio,
@@ -414,6 +528,7 @@ def _remote_desktop_version(connection: Any, Gio: Any, GLib: Any, busname: str) 
         "Get",
         GLib.Variant("(ss)", (_REMOTE_DESKTOP, "version")),
         None,
+        int(timeout * 1000),
     )
     (version,) = reply.unpack()
     return int(version)
@@ -446,10 +561,15 @@ class RemoteDesktopSession:
         eis_fd: int,
         restore_token: str | None,
         session_handle: str | None = None,
+        busname: str = _BUS_NAME,
     ) -> None:
         self._connection = connection
         self._eis_fd: int | None = eis_fd
         self._session_handle = session_handle
+        # Whichever bus name negotiate() used, not the default: a session
+        # created on an alternate portal name has to be closed on that same
+        # name, or Session.Close() goes to a portal that never heard of it.
+        self._busname = busname
         # Mirrors libei.oeffis.Oeffis's ownership rule: reading `eis_fd`
         # hands the fd to the caller, so close() must not also close it once
         # that has happened -- but nothing else will ever close it if the
@@ -516,19 +636,13 @@ class RemoteDesktopSession:
             return
         Gio, GLib = gio_modules
         try:
-            _call_sync(
+            _close_session(
                 self._connection,
                 Gio,
                 GLib,
-                _BUS_NAME,
+                self._busname,
                 self._session_handle,
-                _SESSION_INTERFACE,
-                "Close",
-                None,
-                None,
             )
-        except PortalError as exc:
-            logger.debug("closing the portal session failed: %s", exc)
         finally:
             self._session_handle = None
             self._connection = None
@@ -578,7 +692,11 @@ class RemoteDesktopSession:
         :class:`PortalDeniedError` if any step is declined, and
         :class:`PortalTimeoutError` if any one round trip exceeds
         ``timeout`` seconds (60 by default -- generous, since ``Start``
-        waits on a human answering a dialog).
+        waits on a human answering a dialog). Any of those raised after
+        ``CreateSession`` has succeeded closes the session it created on
+        the way out; nothing else could, since no `RemoteDesktopSession`
+        exists yet to own it and the portal would keep it alive for the
+        life of the bus connection.
 
         ``devices`` selects what to ask for. ``DeviceType.ALL_DEVICES`` is
         liboeffis's sentinel for "everything" and is literally ``0``, which
@@ -628,7 +746,7 @@ class RemoteDesktopSession:
             except _glib_error(GLib) as exc:
                 raise PortalError(f"cannot reach the session bus: {exc}") from exc
 
-        version = _remote_desktop_version(connection, Gio, GLib, busname)
+        version = _remote_desktop_version(connection, Gio, GLib, busname, timeout)
         if version < _MIN_REMOTE_DESKTOP_VERSION:
             raise PortalVersionError(
                 f"RemoteDesktop version {version} is too old for "
@@ -653,8 +771,60 @@ class RemoteDesktopSession:
         )
         if code != 0:
             raise PortalDeniedError("CreateSession")
-        session_handle = results["session_handle"]
+        session_handle = results.get("session_handle")
+        if not isinstance(session_handle, str):
+            # Approved, but with no handle to address the rest of the
+            # sequence to. `results` is portal-supplied data like any other
+            # reply, so a malformed one fails the way the rest of this
+            # module's do -- rather than as the KeyError a direct index
+            # would raise straight past a caller's `except PortalError`.
+            raise PortalError("CreateSession returned no session_handle")
 
+        # Past this point a session exists inside xdg-desktop-portal, and
+        # nothing else can close it: no RemoteDesktopSession owns it yet,
+        # and the connection it was created on is GLib's shared session-bus
+        # singleton, which outlives this failure rather than taking the
+        # session down with it. So every exit from here closes it.
+        try:
+            return cls._connect_devices(
+                connection,
+                Gio,
+                GLib,
+                busname,
+                session_handle,
+                devices=devices,
+                persist_mode=persist_mode,
+                restore_token=restore_token,
+                timeout=timeout,
+            )
+        except BaseException:
+            # BaseException, not Exception: `Start` blocks on a human
+            # answering a consent dialog, so Ctrl-C during that wait is a
+            # routine way out of this function -- and it strands an
+            # approved session exactly as a decline does.
+            _close_session(connection, Gio, GLib, busname, session_handle)
+            raise
+
+    @classmethod
+    def _connect_devices(
+        cls,
+        connection: Any,
+        Gio: Any,
+        GLib: Any,
+        busname: str,
+        session_handle: str,
+        *,
+        devices: DeviceType,
+        persist_mode: PersistMode,
+        restore_token: str | None,
+        timeout: float,
+    ) -> RemoteDesktopSession:
+        """``SelectDevices`` -> ``Start`` -> ``ConnectToEIS``, given a session.
+
+        Split out of :meth:`negotiate` only so that the caller can wrap the
+        whole of it in one ``try`` -- every step here can fail, and every
+        one of those failures leaves the same session behind to be closed.
+        """
         # ALL_DEVICES is 0, which SelectDevices reads as "no device types"
         # rather than "every device type" -- see _ALL_DEVICE_TYPES.
         types = _ALL_DEVICE_TYPES if devices == DeviceType.ALL_DEVICES else devices
@@ -704,5 +874,12 @@ class RemoteDesktopSession:
             _REMOTE_DESKTOP,
             "ConnectToEIS",
             session_handle,
+            timeout,
         )
-        return cls(connection, eis_fd, new_restore_token, session_handle)
+        return cls(
+            connection,
+            eis_fd,
+            new_restore_token,
+            session_handle,
+            busname,
+        )

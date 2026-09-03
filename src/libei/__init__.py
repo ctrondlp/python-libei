@@ -26,9 +26,9 @@ evdev keycodes -- key positions, not characters -- though ``text_utf8()``
 sends characters directly where libei 1.6 is available. See the README for
 the full breakdown, including which features need which libei version.
 
-Alpha: the API is not frozen.
+Beta: the API is not frozen.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = ["__version__"]
