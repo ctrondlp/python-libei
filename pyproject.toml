@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-libei"
-version = "0.4.0"
+version = "0.4.1"
 description = "Inject and receive input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis"
 readme = "README.md"
 license = "MIT"
@@ -101,6 +101,24 @@ strict = true
 # Every property in ei.py/eis.py/oeffis.py re-types a raw C call's result,
 # so this fires everywhere in the wrapper layer for no actionable reason.
 warn_return_any = false
+# mypy defaults this to true and imports sqlite3 unconditionally to honor
+# it -- a crash, not a fallback, on a Python built without it. Confirmed on
+# FreeBSD 15 (GhostBSD's python3.11 port has no _sqlite3), which is the
+# only place this has come up, but the flag is harmless anywhere the
+# module is present: the cache just becomes one file per module instead of
+# one sqlite db.
+sqlite_cache = false
+# Without this, results depend on the OS mypy happens to run on: it
+# defaults to `sys.platform` of the invoking interpreter, and typeshed
+# gates os.memfd_create to sys.platform == "linux" even though FreeBSD has
+# implemented the syscall for years -- confirmed working at runtime on
+# FreeBSD 15 (hasattr(os, "memfd_create") is True, round-trips real data),
+# so the three call sites in tests/test_ei_objects.py,
+# tests/test_eis_objects.py and tests/test_integration_extras.py are
+# correct and this was a typeshed staleness false-positive, not a bug.
+# Pinning to "linux" makes CI and every contributor's machine check the
+# same thing regardless of what they develop on.
+platform = "linux"
 
 # PyGObject is an optional extra (see [project.optional-dependencies].portal),
 # so `gi` may or may not be importable where mypy runs. Without this, the two

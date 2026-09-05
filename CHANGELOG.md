@@ -5,6 +5,33 @@ All notable changes to python-libei are recorded here. The format follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html) — with the usual
 0.x caveat that the API may still change between minor versions.
 
+## [0.4.1] - 2026-09-05
+
+### Fixed
+
+- The test suite's own portability: `tests/test_loader.py` used
+  `libc.so.6` as its stand-in "always available" shared library -- correct
+  on glibc, wrong everywhere else. Confirmed on FreeBSD, whose libc is
+  `libc.so.7`, where it made four otherwise-unrelated tests fail for a
+  reason that had nothing to do with `LazyLibrary`, which was behaving
+  correctly the whole time -- it was accurately reporting that a soname
+  which doesn't exist on that platform isn't available. Resolved with
+  `ctypes.util.find_library("c")` instead of a hardcoded soname.
+
+- `[tool.mypy]`'s defaults broke on FreeBSD in two independent ways, only
+  visible once `mypy` actually ran there rather than just installed.
+  `sqlite_cache` (mypy's own default is on) imports `sqlite3`
+  unconditionally, which crashes rather than falls back on a Python built
+  without `_sqlite3` -- GhostBSD's python3.11 port is one such build. And
+  once that was cleared, `os.memfd_create` failed type-checking on FreeBSD
+  even though it works correctly there at runtime (confirmed directly:
+  `hasattr` is true, and it round-trips real data) -- typeshed's stub for
+  it is still gated to `sys.platform == "linux"`, and mypy's `--platform`
+  defaults to whatever OS invokes it. `sqlite_cache = false` and
+  `platform = "linux"` fix both; the second pins every run to check
+  against Linux's stubs regardless of the contributor's own OS, so results
+  stop depending on where `mypy` happens to execute.
+
 ## [0.4.0] - 2026-09-03
 
 ### Changed

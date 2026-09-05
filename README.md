@@ -100,7 +100,7 @@ pointer.
 
 ## Status
 
-Beta (`0.4.0`), published on [PyPI](https://pypi.org/project/python-libei/)
+Beta (`0.4.1`), published on [PyPI](https://pypi.org/project/python-libei/)
 since `0.1.0`, and the API is not frozen — expect renames before 1.0. What
 that qualifier covers, concretely:
 

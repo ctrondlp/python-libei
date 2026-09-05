@@ -1,17 +1,26 @@
 """Unit tests for the deferred-loading mechanism itself.
 
-Uses libc.so.6 as a stand-in shared library (present on every Linux system)
-so these run without libei installed at all -- they're testing the loader,
-not libei.
+Uses the C library as a stand-in shared library (present on every POSIX
+system) so these run without libei installed at all -- they're testing the
+loader, not libei. The soname isn't portable -- glibc is libc.so.6, FreeBSD
+is libc.so.7 -- so it's resolved with ctypes.util.find_library rather than
+hardcoded; a hardcoded libc.so.6 here once made every test below fail on
+FreeBSD, not because LazyLibrary was wrong but because the soname it was
+asked to load doesn't exist there.
 """
 
 from __future__ import annotations
 
-from ctypes import c_char_p, c_int
+from ctypes import c_char_p, c_int, util
 
 import pytest
 
 from libei._capi.loader import LazyLibrary, LibraryNotFoundError
+
+_found_libc = util.find_library("c")
+if _found_libc is None:
+    raise RuntimeError("no C library found -- these tests need one to stand in")
+_LIBC: str = _found_libc
 
 
 def test_import_does_not_touch_the_filesystem() -> None:
@@ -35,12 +44,12 @@ def test_missing_library_is_not_available() -> None:
 
 
 def test_real_library_is_available() -> None:
-    lib = LazyLibrary("libc.so.6")
+    lib = LazyLibrary(_LIBC)
     assert lib.is_available() is True
 
 
 def test_real_function_call_round_trips() -> None:
-    lib = LazyLibrary("libc.so.6")
+    lib = LazyLibrary(_LIBC)
     abs_ = lib.function("abs", (c_int,), c_int)
     assert abs_(-7) == 7
     assert abs_(7) == 7
@@ -59,14 +68,14 @@ def test_function_result_is_cached_across_calls() -> None:
 
 
 def test_missing_symbol_raises_library_not_found_error() -> None:
-    lib = LazyLibrary("libc.so.6")
+    lib = LazyLibrary(_LIBC)
     nonexistent = lib.function("this_symbol_does_not_exist_in_libc", (c_char_p,), c_int)
     with pytest.raises(LibraryNotFoundError, match="does not export"):
         nonexistent(b"x")
 
 
 def test_two_lazy_libraries_are_independent() -> None:
-    good = LazyLibrary("libc.so.6")
+    good = LazyLibrary(_LIBC)
     bad = LazyLibrary("this-library-definitely-does-not-exist.so.999")
     assert good.is_available() is True
     assert bad.is_available() is False
