@@ -11,6 +11,13 @@ Pure ctypes, no build step, no dependencies.
 device.start_emulating().pointer_motion(5, 0).frame().stop_emulating()
 ```
 
+**The one concept:** events queue up, and **`frame()` is what sends them** as
+one logical hardware event. Forget it and nothing happens — no exception, no
+warning, no movement. Fill the package, then post it.
+
+New here? [docs/getting-started.md](docs/getting-started.md) is install
+through a first real pointer motion, in five minutes.
+
 ## What it's for
 
 Driving a Wayland desktop from Python, when you need real input events rather
@@ -38,7 +45,7 @@ than a widget-tree back door:
   takes Linux evdev *keycodes*, and what character one produces is the
   compositor's layout to decide. `text_utf8()` does send characters
   directly, but only against libei 1.6 with a TEXT-capable device — see
-  [Keys are positions, not characters](#keys-are-positions-not-characters).
+  [Keys are positions, not characters](docs/recipes.md#keyboard-positions-not-characters).
 - **Not a screen-reading library.** libei is input only. Pair it with the
   ScreenCast portal and PipeWire if you also need pixels.
 - **Not a way around user consent.** A real session goes through the portal's
@@ -46,10 +53,28 @@ than a widget-tree back door:
   kernel layer (`/dev/uinput`) instead — a different tool and a different
   trust model.
 
+## Which API do I need?
+
+Five modules, and most callers need exactly two of them: `oeffis` or `portal`
+to get permission, then `ei` to inject.
+
+| You want to… | Use | Notes |
+| --- | --- | --- |
+| **Inject input** into a desktop | `libei.ei` → `Sender` | The automation case. This is what the quick start below does |
+| **Consume input** from a compositor | `libei.ei` → `Receiver` | Compositor-side or input-capture code; same connection dance |
+| **Get permission**, simply | `libei.oeffis` | One call, pollable fd, no dependencies. The consent dialog appears on **every** run |
+| **Get permission**, and not be asked again | `libei.portal` | Same handshake over D-Bus directly, with `persist_mode` / `restore_token`. Needs PyGObject |
+| **Be the server**, for tests or a compositor | `libei.eis` | Drives your client code with no real compositor and no consent dialog |
+
+Each module has `is_available()`, an `Error` exception, and an `EventType` /
+`DeviceCapability` enum. `ei` and `eis` also share the shapes around them:
+`Device`, `Seat`, `Region`, `Keymap`, `Touch`, `Ping`, `Event`, and the frozen
+dataclasses its accessors return. The package ships `py.typed`, so callers
+type-check against real annotations rather than `Any`.
+
 ## What's implemented
 
-Injection covers the input types most automation needs; the rest of libei's
-capability enum is recognized but not driveable.
+Injection covers the input types most automation needs.
 
 | `DeviceCapability` | What you get |
 | --- | --- |
@@ -60,77 +85,54 @@ capability enum is recognized but not driveable.
 | `SCROLL` | `scroll_delta()`, `scroll_discrete()`, `scroll_stop()`, `scroll_cancel()` |
 | `TOUCH` | `device.touch_new()` → `down()` / `motion()` / `up()` |
 | `TEXT` | `text_utf8()`, `text_keysym()`, `TEXT_UTF8` / `TEXT_KEYSYM` events (libei 1.6+) |
-| `GESTURES` | not in any released libei — see below |
-| `STYLUS` | not in any released libei — see below |
 
-`GESTURES` and `STYLUS` are a different case from the rest of that table.
-They, and the swipe/pinch/hold/stylus members of `EventType`, exist on
-libei's `main` branch but in **no released version** — 1.6.0's own
+### Recognized, but not in any released libei
+
+| `DeviceCapability` | State |
+| --- | --- |
+| `GESTURES` | Exists on libei's `main` branch only. **Binding it against a shipping library silently does nothing** — no error, no device, no events |
+| `STYLUS` | Same |
+
+These are a different case from the table above, and worth stating separately
+because a skimming reader could otherwise take them as supported. 1.6.0's own
 `enum ei_device_capability` stops at `TEXT`, and its `enum ei_event_type`
-stops at `EI_EVENT_TEXT_UTF8`. The values here match upstream `main`
-exactly, so they are ready for whatever release adds them; until then,
-binding those capabilities against a real library does nothing and the
-events cannot arrive. The 22 gesture/stylus accessor functions `main` adds
-are deliberately not bound — nothing that ships today exports them, so
-nothing here could be verified against a real library, which is the bar
-every other binding in this package was held to.
+stops at `EI_EVENT_TEXT_UTF8` — so the swipe/pinch/hold/stylus members of
+`EventType` cannot arrive either. The values here match upstream `main`
+exactly, so they are ready for whatever release adds them. The 22
+gesture/stylus accessor functions `main` adds are deliberately not bound:
+nothing that ships today exports them, so nothing here could be verified
+against a real library, which is the bar every other binding in this package
+was held to.
 
-`EventType` otherwise mirrors libei's enum in full, and any event type can
-be *identified* and released safely whether or not it has an accessor.
+`EventType` otherwise mirrors libei's enum in full, and any event type can be
+*identified* and released safely whether or not it has an accessor.
 
 Beyond sending input, the wrapper also covers ping/pong round trips
-(`Context.new_ping()`), touch cancellation (`Touch.cancel()`), keymap
-transfer (`Device.keymap`), region mapping ids and coordinate conversion,
+(`Context.new_ping()`), touch cancellation (`Touch.cancel()`), keymap transfer
+(`Device.keymap`), region mapping ids and coordinate conversion,
 `Context.disconnect()`, `Context.peek_event_type()`, and
-`Seat.request_device()`. On the server side, `libei.eis` mirrors all of it
-and adds `Eis.set_flag()` and `Client.pid`.
-
-Underneath, the ctypes layer binds 250 of the 302 functions the three
-libraries export as of 1.6.0 (libei 109/132, libeis 131/158, liboeffis
-10/12). What is left out is deliberate: `*_get_user_data()` /
-`*_set_user_data()` (the Python wrapper object is where you keep state),
-the `*_ref()` / `*_unref()` pairs that `CObject` handles for you, the
-logging-context accessors, `*_event_type_to_string()`, the NUL-terminated
-`*_device_text_utf8()` (the `_with_length` form is bound instead, so text
-containing a NUL isn't truncated), `ei_new()` (superseded by
-`ei_new_sender()` / `ei_new_receiver()`), `*_clock_set_now_func()`, and the
-`*_get_context()` accessors, which have nothing to hand back: a context is
-only ever created by its own `create_for_*()`, never wrapped from a raw
-pointer.
+`Seat.request_device()`. On the server side, `libei.eis` mirrors all of it and
+adds `Eis.set_flag()` and `Client.pid`. Underneath, the ctypes layer binds 250
+of the 302 functions the three libraries export as of 1.6.0; what is left out,
+and why, is in
+[docs/developers/architecture.md](docs/developers/architecture.md#what-is-bound-and-what-is-deliberately-not).
 
 ## Status
 
 Beta (`0.4.1`), published on [PyPI](https://pypi.org/project/python-libei/)
-since `0.1.0`, and the API is not frozen — expect renames before 1.0. What
-that qualifier covers, concretely:
+since `0.1.0`, and **the API is not frozen** — expect renames before 1.0.
 
-- The injection path — connect, bind, wait for a device, send events — is
-  exercised end-to-end against the real libraries by
-  `tests/test_integration_socketpair.py`, and is in use as the Wayland input
-  backend of a separate GUI-automation project.
-- Text input, touch cancellation, ping/pong, keymap transfer, region mapping
-  ids and `peek_event_type()` are each round-tripped through a real libeis
-  server in `tests/test_integration_extras.py`.
-- Both portal paths (`libei.oeffis` and `libei.portal`) can only ever be
-  verified by hand, since they need an interactive consent dialog that
-  nothing here can drive automatically — `tests/test_portal.py` covers
-  `libei.portal`'s orchestration (raceless subscribe-before-call, the
-  `session_handle_token` crash workaround, persist_mode/restore_token, and
-  closing the portal session on a negotiation that fails part-way)
-  against a fake D-Bus connection only. `libei.oeffis` was verified by hand
-  on 2026-08-25 (see [Troubleshooting](#troubleshooting)), and
-  `libei.portal` on 2026-09-01 against a real GNOME Wayland session
-  (`RemoteDesktop` v2): a first run raised the consent dialog and was
-  approved (5.4s), a second replaying the `restore_token` was granted with
-  no dialog at all (0.2s), three devices resumed on the returned fd
-  (relative pointer, keyboard, absolute pointer — in that order, the device
-  race `ei`-side callers must handle), and `Session.Close()` was exercised.
-  No input was injected — emulation is `libei.ei`'s job.
-- Verified against libei 1.6.0 on Fedora 44 / GNOME 50.4, and against a
-  locally built 1.2.1 (130 passed, 4 skipped — the 1.4 and 1.6 features
-  gate themselves out). CI repeats the 1.2.1 run on Python 3.10-3.13, so
-  the 1.0.0 core floor is exercised on a real old build rather than
-  asserted. 1.0-1.1 and 1.3 have still never been run against.
+The injection path is exercised end to end against the real libraries by the
+integration tests, and is in use as the Wayland input backend of a separate
+GUI-automation project. Both portal paths can only ever be verified by hand,
+since they need a consent dialog nothing can drive automatically; both have
+been, most recently `libei.portal` against a real GNOME Wayland session on
+2026-09-01. Development is against libei 1.6.0, and CI runs the suite against
+Ubuntu's 1.2.1 so the 1.0.0 floor is exercised on a real old build rather than
+asserted.
+
+Exactly what was run, when, and against which versions:
+[docs/developers/verification.md](docs/developers/verification.md).
 
 ## Alternatives
 
@@ -232,12 +234,10 @@ Getting an EI connection means asking the desktop portal, which shows the user
 a consent dialog. After that you have a fd, and everything else is the same
 regardless of how you got it.
 
-**The dialog comes back every run.** The portal can be asked to remember an
-approval — `SelectDevices` takes a `persist_mode`, and returns a
-`restore_token` to hand back next time — but liboeffis does not expose either:
-`oeffis_create_session()` takes a device-type bitmask and nothing else. If
-being prompted once per launch is unacceptable for what you're building, see
-[Avoiding the consent dialog on every run](#avoiding-the-consent-dialog-on-every-run).
+**The dialog comes back every run** with `libei.oeffis`, which exposes no way
+to persist an approval. If being prompted once per launch is unacceptable for
+what you're building, use `libei.portal` instead —
+[Avoiding the consent dialog on every run](docs/recipes.md#avoiding-the-consent-dialog-on-every-run).
 
 ```python
 import select
@@ -275,68 +275,9 @@ libei calls sending events before it resumes "a client bug".
 
 This loop takes the first device to resume, which is fine here because only
 `POINTER` was bound. Bind more than one capability and a seat may resume
-several devices — see the absolute-positioning notes under
-[Sending input](#sending-input) before reusing this pattern.
-
-### Avoiding the consent dialog on every run
-
-`libei.oeffis` cannot do it. liboeffis wraps the portal handshake into one
-call and exposes no options dict, so the two things that make an approval
-persist — `persist_mode` on `SelectDevices`, and the `restore_token` that
-comes back on `Start` — are unreachable through it. This is a limitation of
-the C library, not of these bindings; upstream's own docs say as much:
-liboeffis is "intentionally kept simple, any more complex needs should be
-handled by an application talking to DBus directly"
-([source](https://libinput.pages.freedesktop.org/libei/api/group__liboeffis.html)).
-
-`libei.portal` is that: the same `CreateSession` → `SelectDevices` → `Start`
-→ `ConnectToEIS` sequence, driven directly over D-Bus (needs PyGObject —
-`pip install 'python-libei[portal]'`), with `persist_mode`/`restore_token`
-as real parameters:
-
-```python
-from libei import ei, portal
-
-with portal.RemoteDesktopSession.negotiate(
-    devices=portal.DeviceType.POINTER,
-    persist_mode=portal.PersistMode.UNTIL_REVOKED,
-    restore_token=saved_token,  # None on the first run
-) as session:
-    save_somewhere(session.restore_token)  # a fresh token every time -- save it
-    sender = ei.Sender.create_for_fd(session.eis_fd, name="my-app")
-    ...  # inject input for as long as the session is needed
-```
-
-Save the token somewhere durable and pass it back next time; the portal then
-restores the session without prompting. Treat it as a credential — anyone
-holding it can reopen input injection on that desktop, so it belongs
-wherever you'd keep a password, and the decision to store it at all belongs
-to the application rather than to this library, which never writes it
-anywhere itself.
-
-Save whatever comes back on **every** run, not just the first: the portal is
-free to hand back a different token each time, and a caller that keeps only
-the original would eventually present a stale one. (On GNOME the same token
-comes back on each restore — that is one portal's behaviour, not a
-guarantee.) Passing `restore_token` *without* a `persist_mode` raises
-`ValueError`: the portal answers such a request with no token at all, so
-storing what came back would write `None` over the token you just spent.
-
-Three differences from `Oeffis` above worth knowing:
-
-- **Blocking, not event-driven.** `negotiate()` runs its own nested
-  `GLib.MainLoop` per D-Bus round trip and returns only once connected, or
-  raises `PortalVersionError` / `PortalDeniedError` / `PortalTimeoutError`.
-- **Bounded.** Each round trip gets `timeout` seconds (60 by default —
-  generous, since `Start` waits on a human answering a dialog). Without it a
-  portal that dies after accepting the call would wedge the calling thread
-  forever, which is the one thing `Oeffis`'s pollable fd protects against.
-- **Close it.** The portal session lives in xdg-desktop-portal and outlives
-  the object unless `Session.Close()` is called — `Gio.bus_get_sync()` hands
-  back GLib's *shared* connection, so dropping the session tears nothing
-  down, and a long-running process that negotiates repeatedly accumulates
-  live sessions. The `with` block above handles it; otherwise call
-  `session.close()`.
+several devices — see
+[Picking the right device](docs/recipes.md#picking-the-right-device-when-several-resume)
+before reusing this pattern.
 
 ## Sending input
 
@@ -357,8 +298,7 @@ device.button(BTN_LEFT, True).frame()
 device.button(BTN_LEFT, False).frame()
 device.stop_emulating()
 
-# Press the A key (KEY_A -- a key *position*, not the character
-# "a"; see "Keys are positions, not characters" below)
+# Press the A key (KEY_A -- a key *position*, not the character "a")
 KEY_A = 30
 device.start_emulating()
 device.keyboard_key(KEY_A, True).frame()
@@ -370,117 +310,15 @@ device.start_emulating().scroll_delta(0, 20).frame().stop_emulating()
 device.start_emulating().scroll_discrete(0, 120).frame().stop_emulating()
 ```
 
-### Keys are positions, not characters
+Keyboards need care, because a keycode is a key *position* and the character
+it produces is the layout's business — `KEY_A = 30` types something else under
+AZERTY. Absolute positioning needs the `POINTER_ABSOLUTE` capability and
+coordinates inside one of `device.regions`, and binding it alongside `POINTER`
+is what produces two devices where order cannot be trusted. Touch has its own
+short-lived object rather than going through the device.
 
-`keyboard_key()` takes a Linux evdev keycode — a *physical key position*, not
-a character. `KEY_A = 30` means "the key where A sits on a US QWERTY board";
-under Dvorak or AZERTY the compositor turns that same code into a different
-character. There is no `type("hello")` and no keysym mapping here, so shifted
-characters mean sending the modifier yourself:
-
-```python
-KEY_LEFTSHIFT, KEY_A = 42, 30
-device.start_emulating()
-device.keyboard_key(KEY_LEFTSHIFT, True).frame()
-device.keyboard_key(KEY_A, True).frame()      # "A", not "a"
-device.keyboard_key(KEY_A, False).frame()
-device.keyboard_key(KEY_LEFTSHIFT, False).frame()
-device.stop_emulating()
-```
-
-To get this right for whatever layout the user actually has, read the keymap
-the compositor handed you and resolve characters through it — with the
-`xkbcommon` bindings, say, which this package does not depend on:
-
-```python
-keymap = device.keymap          # None unless the device has KEYBOARD
-if keymap is not None:
-    assert keymap.keymap_type is ei.KeymapType.XKB   # the only type so far
-    with keymap.fd as f:        # a fresh dup() each read; closing it is yours
-        data = f.read(keymap.size)
-```
-
-`keymap.fd` duplicates libei's descriptor and rewinds the copy for you. Left
-to itself a `dup()` shares the original's file offset, which libei leaves at
-the end — reading through it returned zero bytes and no error, which is
-indistinguishable from an empty keymap.
-
-### Or skip layouts entirely, on libei 1.6
-
-A device with the `TEXT` capability takes characters directly, and the
-compositor works out which keys that means under the active layout:
-
-```python
-device.start_emulating().text_utf8("héllo").frame().stop_emulating()
-device.start_emulating().text_keysym(0x61, True).frame().stop_emulating()
-```
-
-This is the one path here that types text rather than pressing positions.
-It needs libei 1.6 on both sides and a seat that offers
-`DeviceCapability.TEXT`; on anything older, `text_utf8()` raises
-`LibraryNotFoundError`, so keep the keycode path as a fallback.
-
-Modifier *state* arrives as events rather than being queryable — watch for
-`EventType.KEYBOARD_MODIFIERS` and read `event.keyboard_xkb_modifiers`, which
-gives `depressed`, `latched`, `locked` and `group`. That is how you find out
-the compositor thinks Caps Lock is on before you start injecting.
-
-Absolute positioning needs the `POINTER_ABSOLUTE` capability, and coordinates
-fall inside one of `device.regions`:
-
-```python
-device.start_emulating().pointer_motion_absolute(960, 540).frame().stop_emulating()
-```
-
-Regions carry more than bounds. `region.mapping_id` groups the ones that map
-to the same thing, `device.region_at(x, y)` finds which region a point falls
-in, and `region.convert_point(x, y)` turns a desktop-wide point into one
-relative to that region — returning `None` when it falls outside, which also
-answers "is it in here?" in a single call. All three need libei 1.1.
-
-**Pick the device by capability, not by arrival order.** A seat can resume
-more than one device — on GNOME you get *both* a relative `virtual pointer`
-and an absolute `shared virtual absolute pointer`, and the relative one
-arrives first. Reusing the quick-start's "first `DEVICE_RESUMED` wins" loop
-here hands you the relative device, on which `pointer_motion_absolute()`
-does nothing at all: no exception, no movement, just an internal libei
-warning (`device is not an absolute pointer`, visible only if you turn on
-[logging](#logging)). Wait for the one you need:
-
-```python
-device = None
-while device is None:
-    select.select([sender.fd], [], [], 5)
-    sender.dispatch()
-    for event in sender.events:
-        if event.event_type is ei.EventType.SEAT_ADDED:
-            event.seat.bind((
-                ei.DeviceCapability.POINTER_ABSOLUTE,
-                ei.DeviceCapability.BUTTON,
-            ))
-        elif event.event_type is ei.EventType.DEVICE_RESUMED:
-            if ei.DeviceCapability.POINTER_ABSOLUTE in event.device.capabilities:
-                device = event.device      # skip the relative sibling
-```
-
-Touch uses its own short-lived object rather than the device directly:
-
-```python
-touch = device.touch_new()
-device.start_emulating()
-touch.down(100, 200)
-device.frame()
-touch.motion(150, 250)
-device.frame()
-touch.up()          # or touch.cancel(), if the gesture was aborted
-device.frame()
-device.stop_emulating()
-```
-
-A cancelled touch still reaches the other side as a `TOUCH_UP` event; what
-separates it from a normal release is `event.touch_up_event.is_cancel`. Both
-sides need version 2 or later of the `ei_touchscreen` interface, and against
-anything older `cancel()` is a noop.
+All four, with working code:
+[docs/recipes.md](docs/recipes.md#pointer-buttons-and-scrolling).
 
 ## Things that will bite you
 
@@ -502,7 +340,6 @@ anything older `cancel()` is a noop.
   whichever resumes first is a coin flip — select on `device.capabilities`
   instead. Sending an event the device lacks the capability for is silently
   ignored, which makes this look like the injection simply not working.
-
 - **Read the accessor that matches the event type.** `event.key_event` on a
   `POINTER_MOTION` event raises `TypeError` naming both types. libei itself
   would have returned `KeyEvent(key=0, is_press=False)` — a real-looking
@@ -514,298 +351,24 @@ anything older `cancel()` is a noop.
   stops at `TEXT`. Binding them against a shipping library silently does
   nothing — no error, no device, no events.
 
-## Reading input instead of sending it
+Nearly all of these fail *silently*, which is why
+[docs/troubleshooting.md](docs/troubleshooting.md) is a checklist rather than
+a list of error messages. Start there when nothing happens.
 
-Use `ei.Receiver` in place of `ei.Sender` — same connection dance, but events
-carry input *from* the compositor:
+## Documentation
 
-```python
-receiver = ei.Receiver.create_for_fd(eis_fd, name="my-app")
-receiver.dispatch()
-for event in receiver.events:
-    if event.event_type is ei.EventType.POINTER_MOTION:
-        motion = event.pointer_event
-        print(motion.dx, motion.dy)
-```
-
-Each event type has its own getter — `key_event`, `button_event`,
-`pointer_event`, `pointer_absolute_event`, `scroll_event`,
-`scroll_discrete_event`, `scroll_stop_event`, `touch_event` and
-`touch_up_event`, `text_utf8_event`, `text_keysym_event` and
-`keyboard_xkb_modifiers` — and each checks the event's type before reading,
-raising `TypeError` rather than handing back the zero-filled result libei
-would give for a mismatch.
-
-Gesture and stylus events have no accessor and cannot arrive from a
-released libei at all (see [What's implemented](#whats-implemented)), but
-they can be identified and skipped safely if they ever do. So can event
-types this package has never heard of:
-`event_type` returns a plain `int` rather than raising, because libei's own
-header says the enum "is not exhaustive". To look at what is coming without
-consuming it, `peek_event_type()` reports the next event's type and leaves it
-queued.
-
-## Connection lifecycle
-
-Beyond sending input, a long-lived client usually wants three things.
-
-**Check the connection is alive.** A ping is a round trip that comes back as
-a `PONG` event carrying the same object, so several can be in flight at once
-and still be told apart:
-
-```python
-ping = sender.new_ping()
-ping.send()
-# ... later, in the event loop:
-#   if event.event_type is ei.EventType.PONG and event.pong.id == ping.id:
-#       ...
-```
-
-**Ask for another device.** If you closed one, or the ones the seat gave you
-no longer cover what you need, `seat.request_device((cap, ...))` asks for
-another — a subset of what `bind()` requested. The server may answer with
-different capabilities, or not at all; anything it does create arrives as a
-`DEVICE_ADDED` event. Needs libei 1.6.
-
-**Shut down deliberately.** `sender.disconnect()` tears the session down
-through the event queue: seats and devices are removed as though the server
-had done it, and `DISCONNECT` is the last event you get. The context is inert
-afterwards but still needs releasing like any other object. Needs libei 1.4.
-
-## Running your own EIS server
-
-`libei.eis` is the compositor side of the protocol. Most people want it for
-*testing* — it lets you drive the client code above without a real compositor
-or a consent dialog:
-
-```python
-import select
-from libei import eis
-
-server = eis.Eis.create_for_fd()
-client_fd = server.add_client()  # hand this fd to a client's ei.Sender/Receiver
-
-while True:
-    select.select([server.fd], [], [])
-    server.dispatch()  # events is empty until dispatch() reads the connection
-    for event in server.events:
-        if event.event_type is eis.EventType.CLIENT_CONNECT:
-            event.client.connect()
-            seat = event.client.new_seat("default")
-            seat.configure_capabilities((eis.DeviceCapability.POINTER,))
-            seat.add()
-        elif event.event_type is eis.EventType.SEAT_BIND:
-            device = event.seat.new_device()
-            device.configure(
-                name="my-pointer", capabilities=(eis.DeviceCapability.POINTER,)
-            )
-            device.add()
-            device.resume()  # until you resume it, the client may not send
-```
-
-`tests/test_integration_socketpair.py` is a complete, working version of both
-halves — connect, negotiate, and round-trip a pointer motion, in one process
-against the real library.
-
-## Logging
-
-libei's own diagnostics are routed into Python's `logging` — the `libei.ei`,
-`libei.eis` and `libei.oeffis` loggers — rather than being written to stderr
-by the C library. This is how you see the warnings that otherwise look like
-nothing happening at all, `device is not an absolute pointer` among them:
-
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-logging.getLogger("libei").setLevel(logging.DEBUG)
-```
-
-At `DEBUG` this is a full protocol trace (every object, message and
-signature, both directions — a few hundred lines for a single connect and
-one pointer motion), which makes it the first thing to reach for when a
-negotiation stalls. `WARNING` gets you just libei's complaints.
-
-## Troubleshooting
-
-**The portal dialog appears, I approve it, and nothing happens.** Earlier
-testing on GNOME 44 saw the round trip hang indefinitely even after clicking
-through the dialog, and it went unroot-caused for a while. Revisited
-2026-08-25 on GNOME 50.4 with a `busctl monitor` trace on the real portal:
-`CreateSession -> SelectDevices -> Start -> ConnectToEIS` completed cleanly in
-a few seconds, 3/3 consecutive attempts, with `Start()`'s `Response` signal
-arriving only after a multi-second gap consistent with a real dialog being
-answered. The code was correctly waiting the whole time -- `dispatch()`
-returning `False` just means no `Response` has arrived yet.
-
-The likely explanation for the earlier hangs: `RemoteDesktop.Start()` can
-involve more than one prompt (an access-request dialog, then a device-sharing
-confirmation), and dismissing or missing one leaves `Start()` never returning
--- indistinguishable from a hang on the caller's side. Not independently
-confirmed by watching the dialogs themselves, only inferred from this trace
-plus which step it stalled at previously; if you hit this again, check
-whether a second prompt is waiting before assuming it's this library.
-`libei.eis` remains the right fallback for anything that doesn't need the
-portal at all, e.g. tests.
-
-**`LibraryNotFoundError`.** The native library isn't installed, or is too old
-to export a function this package binds. Check with `ei.is_available()`.
-
-**My events never arrive.** Almost always a missing `frame()`, or emulating
-before `DEVICE_RESUMED`, or a device that lacks the capability for the event
-you're sending — all three fail silently. Turn on [logging](#logging) at
-`DEBUG` to see what actually reached the compositor.
-
-**The loop hangs waiting for a device.** Check that the seat actually offers
-the capability you bound (`seat.capabilities`).
-
-## API summary
-
-| Module | Use it for |
-| --- | --- |
-| `libei.ei` | Clients: `Sender` (inject), `Receiver` (consume) |
-| `libei.eis` | Servers: `Eis`, for compositors and for testing clients |
-| `libei.oeffis` | Getting an EI fd from the desktop portal |
-| `libei.portal` | The same, over D-Bus directly, with `persist_mode`/`restore_token` |
-
-Each module has `is_available()`, an `Error` exception, and an `EventType` /
-`DeviceCapability` enum. `ei` and `eis` also share the shapes around them:
-`Device`, `Seat`, `Region`, `Keymap`, `Touch`, `Ping`, `Event`, and the frozen
-dataclasses its accessors return. The package ships `py.typed`, so callers
-type-check against real annotations rather than `Any`.
-
-For which of libei's capabilities are actually driveable, and which C
-functions are left unbound, see [What's implemented](#whats-implemented).
-
-## Development
-
-### Architecture
-
-Four layers, bottom up. If you're reading the code for the first time, read
-them in this order -- each one only makes sense once the one below it does.
-
-| Layer | What it does |
-| --- | --- |
-| [`_capi/loader.py`](src/libei/_capi/loader.py) | `LazyLibrary`: `dlopen`s a `.so` on first *call*, not at import, so this package imports fine with no native libraries installed |
-| [`_capi/libei.py`](src/libei/_capi/libei.py), `libeis.py`, `liboeffis.py` | One line per C function, with hand-written ctypes signatures. Nothing else -- no logic |
-| [`_cobject.py`](src/libei/_cobject.py) | `CObject`: pointer ownership, refcounting, and the identity cache that every wrapper class inherits |
-| [`ei.py`](src/libei/ei.py), [`eis.py`](src/libei/eis.py), [`oeffis.py`](src/libei/oeffis.py) | The public API: Python classes, enums and dataclasses over the raw calls |
-
-[`portal.py`](src/libei/portal.py) sits outside this stack entirely -- there
-is no C library behind it, so no `_capi` binding and no `CObject`. It talks
-D-Bus directly through PyGObject (`Gio`/`GLib`, imported lazily the same way
-the C libraries are loaded lazily) and only ever produces a plain fd, which
-is where it hands off to `ei.Sender.create_for_fd()`.
-
-**Read `_cobject.py` first.** It is the smallest file with the most
-consequence: get `wrap()` vs `adopt()`, the `staticmethod()` wrapping of
-`_ref_func`/`_unref_func`, or the `_wrappable` flag wrong and the failure is
-a use-after-free or a segfault rather than a traceback. Every non-obvious
-line there carries a comment explaining what breaks without it.
-
-Two conventions worth knowing before the code reads cleanly:
-
-- **`_capi` names drop the C prefix.** `ei_unref()` is
-  `_capi.libei.unref()`, `eis_device_configure_name()` is
-  `_capi.libeis.device_configure_name()`. The module says which library it
-  is, so repeating it in every name would only add noise.
-- **Wrapper instances are passed straight to C calls.** `CObject` defines
-  `_as_parameter_`, which ctypes consults automatically, so
-  `_capi.libei.device_frame(self, timestamp)` works without unwrapping a
-  pointer out of `self` by hand.
-
-### Setup and checks
-
-```
-python -m venv .venv && . .venv/bin/activate
-pip install -e '.[dev]'
-
-ruff check src tests
-python -m mypy
-
-pytest                        # everything; the integration tests below
-                              # skip themselves if libei/libeis is absent
-pytest -m integration         # only the tests that drive the real libraries
-pytest -rs                    # ...and report which tests skipped, and why
-```
-
-Tests for a feature the installed libei is too old to provide skip
-themselves by checking for the symbol before they negotiate anything --
-`tests/conftest.py`'s `requires_symbol()`. Checking up front rather than
-catching the failure matters: a capability an older library has never heard
-of is accepted silently and simply yields no device, so a test that waited
-for one would hang to its timeout instead of skipping.
-
-CI runs the suite on Python 3.10-3.13 against Ubuntu's libei, which is
-1.2.1 -- deliberately older than the 1.6.0 used for development, so the
-1.0.0 core floor and the version gates both get exercised on a real build
-rather than only on paper. To reproduce that locally, build an old libei
-and point the loader at it:
-
-```sh
-git clone --depth 1 --branch 1.2.1 \
-    https://gitlab.freedesktop.org/libinput/libei.git
-cd libei && meson setup build -Dtests=disabled -Ddocumentation=[] \
-    --prefix=$PWD/prefix && ninja -C build install
-LD_LIBRARY_PATH=$PWD/prefix/lib64 pytest -q -rs   # from this checkout
-```
-
-Expect passes plus skips, never failures or hangs.
-
-A separate job installs the package with no native libraries at all and
-imports it, which is the property the lazy loader exists to provide.
-
-### Releasing
-
-Versions are SemVer and live in two places -- `pyproject.toml` and
-`src/libei/__init__.py` -- which have to agree with each other and with the
-tag. Nothing enforces that yet.
-
-A release is an annotated, `v`-prefixed tag. Pushing it is the whole of it;
-PyPI is the only place a release is published, and no GitHub Release is cut:
-
-```sh
-git tag -a v0.2.0 -m "0.2.0"
-git push origin v0.2.0
-```
-
-While the API is unfrozen, the pre-release signal lives in the version
-itself: a PEP 440 suffix (`0.2.0a1`) keeps a plain `pip install
-python-libei` off it, and a `0.x` version already says the API can move.
-
-Publishing runs from CI on a `v*` tag using PyPI
-[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC), so
-there is no API token in repository secrets to leak or rotate. The `publish`
-job in `ci.yml` handles it, uploading the artifacts the `build` job already
-ran `twine check` over.
-
-That job depends on two pieces of configuration outside this repository,
-both of which are in place as of `0.1.0`:
-
-1. On pypi.org, a trusted publisher on the `python-libei` project: owner
-   `ctrondlp`, repository `python-libei`, workflow `ci.yml`, environment
-   `pypi`. It started life as a **pending** publisher -- the flow for a
-   project with no releases yet -- and the first upload converted it into
-   an ordinary project-level one, so a fresh project is the only case that
-   needs the pending form again. Every field has to match the workflow
-   exactly; a mismatch surfaces as a rejected credential at upload time,
-   not when it is saved.
-2. A GitHub environment named `pypi`, in the repository settings. A
-   required reviewer on it makes each publish a deliberate approval rather
-   than a side effect of pushing a tag.
-
-PyPI filenames are immutable, so a bad upload can only be yanked and
-superseded by a new version, never replaced -- worth rehearsing anything
-unusual on TestPyPI first (separate account, separate pending publisher,
-and `repository-url: https://test.pypi.org/legacy/` on the publish step).
-
-## Design notes
-
-Written from scratch, taking its overall shape from
-[snegg](https://gitlab.freedesktop.org/whot/snegg) (the reference bindings by
-libei's own author), with different priorities suited to being embedded as a
-dependency rather than used for prototyping.
-[`docs/vs-snegg.md`](docs/vs-snegg.md) covers the specifics, including two
-signature issues found by cross-checking against the real libei source.
+- [docs/getting-started.md](docs/getting-started.md) — install through a first
+  pointer motion, in five minutes
+- [docs/recipes.md](docs/recipes.md) — keyboards, touch, absolute positioning,
+  consent persistence, receiver mode, running your own EIS server, logging
+- [docs/troubleshooting.md](docs/troubleshooting.md) — the "when nothing
+  happens" checklist
+- [docs/vs-snegg.md](docs/vs-snegg.md) — how this differs from the reference
+  bindings, and two signature issues found by cross-checking the C source
+- [docs/developers/](docs/developers/) — the four-layer architecture, and what
+  has actually been verified against which libei versions
+- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, checks, testing against an old
+  libei, releasing
 
 ## License
 

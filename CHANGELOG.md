@@ -5,6 +5,44 @@ All notable changes to python-libei are recorded here. The format follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html) — with the usual
 0.x caveat that the API may still change between minor versions.
 
+## [Unreleased]
+
+### Changed
+
+- **The README no longer asks you to learn libei before you can use
+  python-libei.** An external review put it exactly that way, and the shape of
+  the file agreed: 812 lines, with the four-layer architecture, the release
+  process and a full verification log sitting between a new reader and the
+  code they needed. It is now 375 lines and leads with what a caller does.
+
+  Added where they were missing: a **`frame()` callout in the opening lines**,
+  since events queueing until a frame commits them is the one concept every
+  user must hold and the commonest reason a first attempt appears to do
+  nothing; and a **"Which API do I need?" table** — `ei.Sender` vs
+  `ei.Receiver` vs `oeffis` vs `portal` vs `eis` — because the package exposes
+  five modules and most callers need exactly two.
+
+  **The `What's implemented` table is now two tables.** `GESTURES` and
+  `STYLUS` are in no released libei, and a skimming reader could take a single
+  table as saying otherwise. They now sit under their own heading that says
+  binding them against a shipping library silently does nothing.
+
+- **New `docs/`:** `getting-started.md` (install through a first real pointer
+  motion), `recipes.md` (keyboards, touch, absolute positioning, consent
+  persistence, receiver mode, EIS server, logging), `troubleshooting.md`, and
+  an index. Troubleshooting is deliberately a **10-point "when nothing
+  happens" checklist** rather than a list of error messages, because nearly
+  every failure mode here — a missing `frame()`, emulating before
+  `DEVICE_RESUMED`, an event the device lacks the capability for — is silent
+  by design.
+
+- **New `CONTRIBUTING.md`**, holding the setup, checks, old-libei
+  reproduction and release process that were living in the README, matching
+  the convention of the sibling projects. The architecture explanation moved
+  to `docs/developers/architecture.md` and the per-path verification log to
+  `docs/developers/verification.md`, with a short trust summary left in the
+  README's Status section.
+
 ## [0.4.1] - 2026-09-05
 
 ### Fixed
