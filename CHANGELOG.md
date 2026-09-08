@@ -7,6 +7,19 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`_wait_for_signal` (used by `InputCaptureSession.wait_for_activation`/
+  `wait_for_deactivation`) no longer double-removes its own GLib timeout
+  source on timeout**, which logged a real GLib warning ("Source ID N was
+  not found when attempting to remove it") on every timed-out wait.
+  `GLib.timeout_add`'s callback returns `False`, which already deregisters
+  the source; the cleanup `finally` block called `GLib.source_remove` on it
+  again unconditionally. Caught live on the GNOME 50 box (this session's
+  first real timeout run against a genuine GLib main loop) -- the unit
+  tests' fake `GLib.source_remove` doesn't reproduce the warning, so it was
+  invisible to the suite.
+
 ## [0.5.1] - 2026-09-08
 
 ### Fixed

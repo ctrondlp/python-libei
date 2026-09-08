@@ -528,6 +528,28 @@ def test_wait_for_activation_times_out_with_no_signal() -> None:
     assert excinfo.value.timeout == 0.01
 
 
+def test_wait_for_activation_does_not_double_remove_the_timeout_source_on_timeout() -> (
+    None
+):
+    # Live-caught 2026-09-08: GLib.timeout_add's callback returning False
+    # (as on_timeout does) already deregisters the source, so calling
+    # GLib.source_remove on it again logs a real GLib warning ("Source ID N
+    # was not found when attempting to remove it"). The fake source_remove
+    # in install_fake_gi doesn't model that -- it just clears
+    # pending_timeout either way -- so only asserting the call itself was
+    # never made catches this; a fake that raised on double-removal would
+    # have caught it long ago, but reproducing that faithfully needs real
+    # GLib, which nothing here has.
+    connection = FakeInputCaptureConnection()
+    with install_fake_gi(connection):
+        glib = sys.modules["gi.repository.GLib"]
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with mock.patch.object(glib, "source_remove") as source_remove:
+            with pytest.raises(portal.PortalTimeoutError):
+                session.wait_for_activation(timeout=0.01)
+    source_remove.assert_not_called()
+
+
 def test_wait_for_activation_subscribes_on_this_sessions_own_path() -> None:
     # A caller managing several sessions on one MainContext must only ever
     # hear about its own session's activation, not another's.
