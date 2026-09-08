@@ -926,6 +926,53 @@ def _input_capture_version(
     return int(version)
 
 
+def _create_input_capture_session_v1(
+    connection: Any,
+    Gio: Any,
+    GLib: Any,
+    busname: str,
+    types: int,
+    timeout: float,
+) -> str:
+    """Create an InputCapture session on a portal that predates v2.
+
+    v1 has no ``Start`` at all -- that method, like ``CreateSession2``, was
+    added in version 2. Here ``CreateSession`` itself carries
+    ``capabilities`` and raises the consent dialog, and the session is ready
+    for ``GetZones`` / ``SetPointerBarriers`` / ``Enable`` the moment its
+    ``Response`` arrives. ``ConnectToEIS`` is a v1 original, so the rest of
+    this class works against such a portal unchanged.
+
+    Returns the session handle. ``persist_mode`` and ``restore_token`` have
+    no v1 equivalent -- both are documented as version 2 additions to
+    ``Start``, which does not exist here -- so the caller must reject them
+    before getting this far rather than have them silently ignored.
+    """
+    code, results = _request(
+        connection,
+        Gio,
+        GLib,
+        busname,
+        _INPUT_CAPTURE,
+        "CreateSession",
+        "(sa{sv})",
+        ("",),
+        {
+            "session_handle_token": GLib.Variant("s", uuid.uuid4().hex),
+            "capabilities": GLib.Variant("u", int(types)),
+        },
+        timeout,
+    )
+    if code != 0:
+        raise PortalDeniedError(
+            "CreateSession", "the user declined the input-capture consent dialog"
+        )
+    session_handle = results.get("session_handle")
+    if not isinstance(session_handle, str):
+        raise PortalError("CreateSession returned no session_handle")
+    return session_handle
+
+
 def _wait_for_signal(
     connection: Any,
     Gio: Any,
@@ -1392,11 +1439,18 @@ class InputCaptureSession:
         Blocks until ``CreateSession2`` -> ``Start`` -> ``ConnectToEIS``
         resolves, prompting the user for consent along the way unless
         ``restore_token`` lets the portal skip that. Raises
-        :class:`PortalVersionError` if the compositor's InputCapture portal
-        predates ``CreateSession2`` (needs v2+ -- this module never speaks
-        the deprecated v1 ``CreateSession``), :class:`PortalDeniedError` if
-        ``Start`` is declined, and :class:`PortalTimeoutError` if any one
-        round trip exceeds ``timeout`` seconds.
+        :class:`PortalDeniedError` if consent is declined, and
+        :class:`PortalTimeoutError` if any one round trip exceeds ``timeout``
+        seconds.
+
+        A portal older than v2 has neither ``CreateSession2`` nor ``Start``,
+        and is negotiated through the deprecated v1 ``CreateSession``
+        instead -- one call that carries ``capabilities`` and raises the
+        consent dialog itself. Everything after negotiation is identical;
+        ``ConnectToEIS`` is a v1 original. The one thing v1 cannot do is
+        persist: ``persist_mode`` and ``restore_token`` were added to
+        ``Start``, so passing either against such a portal raises
+        :class:`PortalVersionError` rather than being quietly ignored.
 
         Returns before anything is actually captured: :meth:`set_pointer_barriers`
         and :meth:`enable` still have to be called, and even then nothing
@@ -1435,62 +1489,95 @@ class InputCaptureSession:
                 raise PortalError(f"cannot reach the session bus: {exc}") from exc
 
         version = _input_capture_version(connection, Gio, GLib, busname, timeout)
-        if version < _MIN_INPUT_CAPTURE_VERSION:
+        # A version below 2 is not a portal to give up on -- it is a portal
+        # that speaks the older half of the same interface. Only
+        # `CreateSession2` and `Start` are version 2 additions; `GetZones`,
+        # `SetPointerBarriers`, `Enable`, `Disable`, `Release` and, crucially,
+        # `ConnectToEIS` are all v1 originals, so everything this class does
+        # after negotiation works either way and only session creation forks.
+        #
+        # This is not hypothetical. xdg-desktop-portal-gnome 50 reports
+        # version 0 -- it registers the full impl interface and never sets the
+        # property -- and calling `CreateSession2` against it fails with
+        # `UnknownMethod`, while v1 `CreateSession` is dispatched normally.
+        # Note that its introspection XML advertises `CreateSession2` anyway:
+        # that XML is static, so it says nothing about what the frontend will
+        # actually dispatch. The `version` property is the only usable signal,
+        # which is why it is read first and believed.
+        legacy = version < _MIN_INPUT_CAPTURE_VERSION
+
+        if legacy and (persist_mode != PersistMode.NONE or restore_token is not None):
             raise PortalVersionError(
-                f"InputCapture version {version} is too old for "
-                f"CreateSession2 (need {_MIN_INPUT_CAPTURE_VERSION}+)"
+                f"InputCapture version {version} has no Start method, and "
+                f"persist_mode/restore_token are version "
+                f"{_MIN_INPUT_CAPTURE_VERSION} additions to it -- this portal "
+                f"cannot persist a session. Retry with persist_mode=NONE and "
+                f"no restore_token to negotiate a one-shot session."
             )
 
         if capabilities == DeviceType.ALL_DEVICES:
             types = _ALL_DEVICE_TYPES
         else:
             types = capabilities
-        reply = _call_sync(
-            connection,
-            Gio,
-            GLib,
-            busname,
-            _OBJECT_PATH,
-            _INPUT_CAPTURE,
-            "CreateSession2",
-            GLib.Variant(
-                "(a{sv})",
-                ({"session_handle_token": GLib.Variant("s", uuid.uuid4().hex)},),
-            ),
-            None,
-            int(timeout * 1000),
-        )
-        (results,) = reply.unpack()
-        session_handle = results.get("session_handle")
-        if not isinstance(session_handle, str):
-            raise PortalError("CreateSession2 returned no session_handle")
+
+        if legacy:
+            session_handle = _create_input_capture_session_v1(
+                connection, Gio, GLib, busname, int(types), timeout
+            )
+        else:
+            reply = _call_sync(
+                connection,
+                Gio,
+                GLib,
+                busname,
+                _OBJECT_PATH,
+                _INPUT_CAPTURE,
+                "CreateSession2",
+                GLib.Variant(
+                    "(a{sv})",
+                    ({"session_handle_token": GLib.Variant("s", uuid.uuid4().hex)},),
+                ),
+                None,
+                int(timeout * 1000),
+            )
+            (results,) = reply.unpack()
+            session_handle = results.get("session_handle")
+            if not isinstance(session_handle, str):
+                raise PortalError("CreateSession2 returned no session_handle")
 
         # Past this point a session exists inside xdg-desktop-portal, and
         # nothing else can close it -- see RemoteDesktopSession.negotiate's
         # identical reasoning, which this mirrors line for line.
         try:
-            options: dict[str, Any] = {"capabilities": GLib.Variant("u", int(types))}
-            if persist_mode != PersistMode.NONE:
-                options["persist_mode"] = GLib.Variant("u", int(persist_mode))
-            if restore_token is not None:
-                options["restore_token"] = GLib.Variant("s", restore_token)
-            code, start_results = _request(
-                connection,
-                Gio,
-                GLib,
-                busname,
-                _INPUT_CAPTURE,
-                "Start",
-                "(osa{sv})",
-                (session_handle, ""),
-                options,
-                timeout,
-            )
-            if code != 0:
-                raise PortalDeniedError(
-                    "Start", "the user declined the input-capture consent dialog"
+            # v1 asked for consent and capabilities in CreateSession itself,
+            # and has no Start to call; it can therefore never issue a
+            # restore token either.
+            new_restore_token = None
+            if not legacy:
+                options: dict[str, Any] = {
+                    "capabilities": GLib.Variant("u", int(types))
+                }
+                if persist_mode != PersistMode.NONE:
+                    options["persist_mode"] = GLib.Variant("u", int(persist_mode))
+                if restore_token is not None:
+                    options["restore_token"] = GLib.Variant("s", restore_token)
+                code, start_results = _request(
+                    connection,
+                    Gio,
+                    GLib,
+                    busname,
+                    _INPUT_CAPTURE,
+                    "Start",
+                    "(osa{sv})",
+                    (session_handle, ""),
+                    options,
+                    timeout,
                 )
-            new_restore_token = start_results.get("restore_token")
+                if code != 0:
+                    raise PortalDeniedError(
+                        "Start", "the user declined the input-capture consent dialog"
+                    )
+                new_restore_token = start_results.get("restore_token")
 
             eis_fd = _call_for_fd(
                 connection,

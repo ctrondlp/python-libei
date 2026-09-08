@@ -7,6 +7,39 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-08
+
+### Fixed
+
+- **`InputCaptureSession.negotiate()` now works against pre-v2 portals**, via
+  the deprecated v1 `CreateSession`. Only `CreateSession2` and `Start` are
+  version 2 additions to the interface -- `GetZones`, `SetPointerBarriers`,
+  `Enable`, `Disable`, `Release` and `ConnectToEIS` are all v1 originals -- so
+  just session creation forks and everything after negotiating is unchanged.
+  On v1 a single `CreateSession` carries `capabilities` and raises the consent
+  dialog itself; there is no `Start` to call.
+
+  This turns out to matter on shipping systems, not just old ones:
+  **xdg-desktop-portal-gnome 50 reports InputCapture version 0** -- it
+  registers the complete impl interface (including `ConnectToEIS`, the
+  `Activated`/`Deactivated` signals and `SupportedCapabilities = 15`) and
+  simply never sets the `version` property, and the frontend derives its own
+  version from the impl's. Previously that raised
+  `PortalVersionError: InputCapture version 0 is too old for CreateSession2`
+  and there was no way through. Live-validated on Fedora 44 / GNOME Shell 50.0
+  (xdg-desktop-portal 1.21.1): negotiation returns a real EIS fd and `zones()`
+  answers `(0, [(1920, 1080, 0, 0)])`.
+
+  Note that such a portal's introspection XML advertises `CreateSession2`
+  anyway -- that XML is static and says nothing about what the frontend will
+  dispatch, which is why the `version` property is read first and believed.
+  Calling `CreateSession2` there fails with `UnknownMethod`.
+
+  The one thing v1 cannot do is persist: `persist_mode` and `restore_token`
+  were added to `Start`, which does not exist. Passing either against a pre-v2
+  portal now raises `PortalVersionError` explaining that, rather than being
+  silently ignored and handing back a `restore_token` of `None`.
+
 ## [0.5.0] - 2026-09-08
 
 ### Added
