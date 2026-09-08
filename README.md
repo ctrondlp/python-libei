@@ -144,9 +144,15 @@ Exactly what was run, when, and against which versions:
 
 ## Requirements
 
-- Linux with a Wayland compositor (GNOME, KDE, Sway, …)
+- Linux or FreeBSD with a Wayland compositor (GNOME, KDE, Sway, …).
+  Nothing here is kernel-specific -- it is pure ctypes over the native
+  libraries, with no syscall the C library doesn't already abstract. The
+  portal paths are the part likeliest to come up short off Linux, since
+  they need an xdg-desktop-portal RemoteDesktop backend to talk to.
 - CPython 3.10 or newer (tested on 3.13)
-- The native libraries: on Fedora, `sudo dnf install libei libeis liboeffis`
+- The native libraries: on Fedora, `sudo dnf install libei libeis liboeffis`;
+  on FreeBSD, `pkg install libei` (the `x11/libei` port), which supplies all
+  three sonames including `liboeffis`
 - `libei.portal` only: PyGObject (`pip install 'python-libei[portal]'`), plus
   whatever GObject-introspection libraries your distro needs for `Gio` --
   PyPI's PyGObject wheel supplies the Python side only. Not needed for
@@ -154,8 +160,9 @@ Exactly what was run, when, and against which versions:
 - libei 1.0.0 or newer for the core: connecting, binding a seat, and
   sending pointer, button, keyboard, scroll and touch input all use symbols
   that have existed with a stable signature since 1.0.0, and upstream keeps
-  API/ABI back-compatible within the 1.x series. Only 1.5.0 and 1.6.0
-  (Fedora 44) have actually been run against.
+  API/ABI back-compatible within the 1.x series. Only 1.5.0 and 1.6.0 have
+  actually been run against -- 1.6.0 on both Fedora 44 and FreeBSD 15, where
+  the injection path passes the full suite with nothing skipped.
 
   Newer libei buys you more, per feature:
 
