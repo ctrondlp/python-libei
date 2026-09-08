@@ -265,7 +265,12 @@ class FakeConnection:
         return FakeReply((0,)), FakeUnixFDList(self.fd_responses[method])
 
 
-def install_fake_gi(connection: FakeConnection | None = None) -> Any:
+# `connection` is anything that quacks like a Gio.DBusConnection -- this
+# module's FakeConnection and its subclasses, but also the unrelated
+# FakeInputCaptureConnection in test_inputcapture.py, which implements a
+# different call_sync() rather than deriving from this one's. It is only
+# ever handed back out of bus_get_sync(), which is untyped either way.
+def install_fake_gi(connection: Any = None) -> Any:
     gi = types.ModuleType("gi")
     gi.require_version = lambda *a, **kw: None  # type: ignore[attr-defined]
     repository = types.ModuleType("gi.repository")
