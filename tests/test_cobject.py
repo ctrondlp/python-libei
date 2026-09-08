@@ -9,6 +9,7 @@ from __future__ import annotations
 import gc
 import threading
 import time
+import weakref
 
 import pytest
 
@@ -88,13 +89,21 @@ def test_unref_called_when_last_reference_dropped() -> None:
 def test_cache_does_not_keep_object_alive() -> None:
     Tracked = make_tracked_class()
     obj = Tracked.wrap(0x9999)
-    obj_id = id(obj)
+    tracker = weakref.ref(obj)
     del obj
     gc.collect()
-    # A fresh wrap() after the original was collected must build a new
-    # object, not resurrect a stale entry from the weak cache.
+    # Only the cache still referred to that object, and it is gone: the
+    # cache holds its values weakly.
+    assert tracker() is None
+    # A fresh wrap() must then build a new object rather than resurrect a
+    # stale entry -- and constructing one refs again where a cache hit
+    # would not, so the ref count is what says which happened. Comparing
+    # id() cannot: CPython is free to give the new object the address the
+    # collected one just freed, which on some versions it reliably does.
     obj2 = Tracked.wrap(0x9999)
-    assert id(obj2) != obj_id
+    assert obj2 is not None
+    ref_calls = [c for c in Tracked.calls if c == ("ref", 0x9999)]  # type: ignore[attr-defined]
+    assert len(ref_calls) == 2
 
 
 def test_wrap_without_ref_func_still_tracks_unref() -> None:
