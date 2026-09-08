@@ -7,6 +7,48 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-08
+
+### Added
+
+- **`libei.portal.InputCaptureSession`**, the read direction: receiving real
+  input from the user's own devices via `org.freedesktop.portal.InputCapture`,
+  rather than injecting synthetic input the way `RemoteDesktopSession` and
+  every other class in this package does. Mirrors `RemoteDesktopSession`'s
+  own architecture closely -- `negotiate()` (`CreateSession2` -> `Start` ->
+  `ConnectToEIS`), the same `PersistMode`/restore-token round trip, the same
+  ownership rules for `eis_fd` and `close()` -- and reuses its private
+  Request/Response plumbing directly rather than duplicating it; `_request()`
+  gained an optional `trailing_args` parameter for `SetPointerBarriers`, the
+  one Request-returning method in either portal whose `options` argument is
+  not last.
+
+  Adds `zones()`, `set_pointer_barriers()`, `enable()`/`disable()`/
+  `release()`, and `wait_for_activation()`/`wait_for_deactivation()` --  new
+  plumbing this needed and `RemoteDesktopSession` did not: capturing is
+  triggered by the compositor deciding a pointer barrier was crossed, not by
+  a call this module makes, so waiting for `Activated`/`Deactivated` is an
+  ordinary signal subscription rather than the request-that-returns-a-handle
+  pattern every other method here uses.
+
+  **Never run against a real portal**, unlike every other class in this
+  module -- see the class's own docstring for why: verifying it needs a
+  human to click through the consent dialog *and* accept that their pointer
+  will be exclusively diverted from their own desktop for the length of the
+  test, not something to trigger without asking first. Designed against the
+  shipped portal spec
+  (`/usr/share/dbus-1/interfaces/org.freedesktop.portal.InputCapture.xml`),
+  not just the header, and unit-tested against a fake connection
+  reproducing that spec's documented shapes -- see `tests/
+  test_inputcapture.py`, including its own note on the one bug this caught:
+  an early draft of one test omitted the "force PyGObject import to fail"
+  patch its sibling in `test_portal.py` already used, which on a system
+  where PyGObject really is installed reached the real session bus instead
+  of a fake one and raised a real consent dialog. No pointer barriers had
+  been set and `Enable()` was never reached, so nothing was actually
+  captured -- but the test now forces the import failure explicitly, the
+  way its sibling always did.
+
 ### Changed
 
 - **The README no longer asks you to learn libei before you can use

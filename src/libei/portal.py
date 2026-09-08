@@ -1,5 +1,14 @@
-"""Negotiate an EIS connection by driving ``org.freedesktop.portal.RemoteDesktop``
-directly over D-Bus, rather than through :mod:`libei.oeffis`.
+"""Negotiate an EIS connection by driving a portal directly over D-Bus,
+rather than through :mod:`libei.oeffis`.
+
+Two portals, two directions. :class:`RemoteDesktopSession` negotiates
+``org.freedesktop.portal.RemoteDesktop`` to *inject* input; below it,
+:class:`InputCaptureSession` negotiates the separate
+``org.freedesktop.portal.InputCapture`` to *receive* real input from the
+user's own devices instead -- see its own class docstring, including why
+it has never been run against a real portal. Everything in this module
+docstring up to :class:`InputCaptureSession`'s own section is about
+``RemoteDesktopSession`` specifically.
 
 :mod:`libei.oeffis` wraps liboeffis, whose C API
 (``oeffis_create_session()``) takes only a device-type bitmask -- it exposes
@@ -65,7 +74,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 from .oeffis import DeviceType
 
@@ -79,16 +88,20 @@ __all__ = [
     "PortalDeniedError",
     "PortalTimeoutError",
     "RemoteDesktopSession",
+    "Activation",
+    "InputCaptureSession",
     "is_available",
 ]
 
 _BUS_NAME = "org.freedesktop.portal.Desktop"
 _OBJECT_PATH = "/org/freedesktop/portal/desktop"
 _REMOTE_DESKTOP = "org.freedesktop.portal.RemoteDesktop"
+_INPUT_CAPTURE = "org.freedesktop.portal.InputCapture"
 _REQUEST_INTERFACE = "org.freedesktop.portal.Request"
 _SESSION_INTERFACE = "org.freedesktop.portal.Session"
 
 _MIN_REMOTE_DESKTOP_VERSION = 2  # ConnectToEIS needs v2+
+_MIN_INPUT_CAPTURE_VERSION = 2  # CreateSession2 is a v2-only method
 
 _DEFAULT_TIMEOUT = 60.0
 """Seconds to wait for one portal round trip. Generous, because a human has
@@ -351,6 +364,7 @@ def _request(
     leading_args: tuple[Any, ...],
     options: dict[str, Any],
     timeout: float,
+    trailing_args: tuple[Any, ...] = (),
 ) -> tuple[int, Any]:
     """Call a Request-returning portal method, racelessly.
 
@@ -374,6 +388,13 @@ def _request(
     Both legs share one deadline (see `_msec_until`), since a caller asking
     for 60 seconds means the answer arrives inside 60 seconds, not inside
     however many 60-second waits the sequence happens to be built from.
+
+    ``trailing_args``, appended after ``options`` in the call's parameter
+    tuple, exists for ``InputCapture.SetPointerBarriers`` -- the one
+    Request-returning method in either portal whose ``options`` is not its
+    last positional argument (``barriers`` and ``zone_set`` follow it).
+    Every RemoteDesktop call leaves this at its default, reproducing the
+    exact parameter tuple this function always built.
     """
     deadline = time.monotonic() + timeout
     unique_name = connection.get_unique_name()
@@ -428,7 +449,7 @@ def _request(
 
     subscribe(expected_path)
     try:
-        parameters = GLib.Variant(signature, (*leading_args, options))
+        parameters = GLib.Variant(signature, (*leading_args, options, *trailing_args))
         reply = _call_sync(
             connection,
             Gio,
@@ -883,3 +904,610 @@ class RemoteDesktopSession:
             session_handle,
             busname,
         )
+
+
+def _input_capture_version(
+    connection: Any, Gio: Any, GLib: Any, busname: str, timeout: float
+) -> int:
+    """Read the InputCapture portal's ``version`` property."""
+    reply = _call_sync(
+        connection,
+        Gio,
+        GLib,
+        busname,
+        _OBJECT_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        GLib.Variant("(ss)", (_INPUT_CAPTURE, "version")),
+        None,
+        int(timeout * 1000),
+    )
+    (version,) = reply.unpack()
+    return int(version)
+
+
+def _wait_for_signal(
+    connection: Any,
+    Gio: Any,
+    GLib: Any,
+    busname: str,
+    interface: str,
+    signal: str,
+    path: str,
+    timeout: float | None,
+) -> tuple[Any, ...]:
+    """Block for one emission of ``signal`` on ``path``, unpacked.
+
+    Unlike `_request`, nothing here *triggers* the signal: ``Activated`` and
+    ``Deactivated`` fire whenever the compositor decides a pointer barrier
+    was crossed, which the caller has no control over and which may happen
+    before this is even called (a long-enabled session, subscribed to
+    late) or not for a long time. ``timeout=None`` waits indefinitely --
+    the read a caller wants when there is nothing else useful to do but
+    wait for a human to move the pointer.
+    """
+    loop = GLib.MainLoop()
+    result: dict[str, Any] = {}
+    timed_out = False
+
+    def on_signal(
+        _conn: Any,
+        _sender: Any,
+        _path: Any,
+        _iface: Any,
+        _signal: Any,
+        params: Any,
+        *_a: Any,
+    ) -> None:
+        if result:  # a subscription that outlives its own wait can fire twice
+            return
+        result["args"] = params.unpack()
+        loop.quit()
+
+    def on_timeout() -> bool:
+        nonlocal timed_out
+        timed_out = True
+        loop.quit()
+        return False
+
+    subscription = connection.signal_subscribe(
+        busname,
+        interface,
+        signal,
+        path,
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_signal,
+        None,
+    )
+    try:
+        if not result:
+            timeout_source = None
+            if timeout is not None:
+                timeout_source = GLib.timeout_add(int(timeout * 1000), on_timeout)
+            try:
+                loop.run()
+            finally:
+                if timeout_source is not None:
+                    GLib.source_remove(timeout_source)
+    finally:
+        connection.signal_unsubscribe(subscription)
+    if timed_out:
+        # timed_out is only ever set inside on_timeout, itself only ever
+        # registered when timeout is not None -- so this always holds, but
+        # not in a shape mypy can see across the closure.
+        assert timeout is not None
+        raise PortalTimeoutError(signal, timeout)
+    return result["args"]
+
+
+class Activation(NamedTuple):
+    """One ``Activated`` signal's payload -- see
+    :meth:`InputCaptureSession.wait_for_activation`.
+    """
+
+    activation_id: int
+    """Pass this back to :meth:`InputCaptureSession.release`. Wraps around;
+    do not assume it only increases within one process's lifetime."""
+
+    cursor_position: tuple[float, float] | None
+    """Where the pointer was, in the coordinate space :meth:`
+    InputCaptureSession.zones` reports -- usually *outside* every zone,
+    since a barrier sits on a zone's own edge. None if the compositor sent
+    none, which the spec permits."""
+
+    barrier_id: int | None
+    """The barrier that triggered, matching one passed to
+    :meth:`InputCaptureSession.set_pointer_barriers` -- 0 if the compositor
+    could not determine which, None if capture was not triggered by a
+    barrier at all."""
+
+
+class InputCaptureSession:
+    """A negotiated ``org.freedesktop.portal.InputCapture`` session.
+
+    The read half of what :class:`RemoteDesktopSession` is for the write
+    direction: instead of injecting synthetic input, this receives real
+    input from the user's own devices once the compositor decides to divert
+    it here. That decision is the whole point of the protocol and is never
+    this session's to make -- see :meth:`enable` and :meth:`
+    wait_for_activation`.
+
+    **Capturing is exclusive.** Once the compositor activates a capture,
+    the events it captures stop reaching the desktop entirely and are sent
+    only to this session over the EIS connection -- there is no
+    "observe without diverting" mode. A caller holding this open across
+    more than the moment it needs is holding the user's pointer or keyboard
+    hostage from their own desktop; keep the enabled window as short as
+    the caller can manage, and call :meth:`release` the instant the answer
+    needed has been read.
+
+    The same two things :class:`RemoteDesktopSession` has to release do not
+    release themselves here either -- the portal session outlives this
+    object, and the EIS fd is owned once read. :meth:`close` (or the
+    context-manager form) does both. Unlike :class:`RemoteDesktopSession`,
+    an *active* capture must additionally be handed back explicitly with
+    :meth:`release` before :meth:`close` -- closing the session without it
+    is exactly the failure mode the exclusivity paragraph above warns
+    about, and this cannot release on a caller's behalf during cleanup
+    without risking racing a capture that only just started.
+
+    **Never live-tested.** Every other class in this module that talks to a
+    real portal carries a hand-verification note in its own docstring; this
+    one does not, because verifying it means a human clicking through the
+    consent dialog *and* accepting that their pointer will be diverted away
+    from their own desktop for the length of the test -- not something to
+    trigger without asking first, unlike everything else here. Designed
+    against ``/usr/share/dbus-1/interfaces/org.freedesktop.portal.
+    InputCapture.xml`` (the shipped portal spec, not the header alone) and
+    unit-tested against a fake connection reproducing that spec's documented
+    shapes; see ``tests/test_inputcapture.py``'s own module docstring for
+    what that does and does not prove.
+    """
+
+    def __init__(
+        self,
+        connection: Any,
+        session_handle: str,
+        eis_fd: int,
+        restore_token: str | None,
+        busname: str = _BUS_NAME,
+    ) -> None:
+        self._connection = connection
+        self._session_handle: str | None = session_handle
+        self._eis_fd: int | None = eis_fd
+        self._eis_fd_claimed = False
+        self._busname = busname
+        self._closed = False
+        self.restore_token = restore_token
+        """The token to pass as ``restore_token=`` on the next call to
+        avoid re-prompting, or ``None`` -- see
+        `RemoteDesktopSession.restore_token`, which this mirrors exactly."""
+
+    @property
+    def session_handle(self) -> str:
+        """The object path this session is addressed by.
+
+        Exposed (unlike `RemoteDesktopSession`, which has no reason to)
+        because :meth:`wait_for_activation` and :meth:`wait_for_deactivation`
+        are scoped to one session's own signals, and a caller building
+        something this module does not -- watching several sessions on one
+        `GLib.MainContext`, say -- needs it to tell them apart.
+        """
+        if self._session_handle is None:
+            raise PortalError("the session is closed")
+        return self._session_handle
+
+    @property
+    def eis_fd(self) -> int:
+        """The fd to pass to a passive ``libei.ei.Receiver`` context.
+
+        Reading this transfers ownership to the caller, exactly as
+        `RemoteDesktopSession.eis_fd` does for the sender side -- see that
+        property's docstring for the ownership rule this mirrors.
+        """
+        if self._eis_fd is None:
+            raise PortalError("the session is closed; its EIS fd is gone")
+        self._eis_fd_claimed = True
+        return self._eis_fd
+
+    def _plain_call(self, method: str, *, timeout: float = _DEFAULT_TIMEOUT) -> None:
+        """Call ``Enable`` or ``Disable``: no options, no reply, no Request.
+
+        Both take effect (or fail on the D-Bus itself) synchronously, with
+        no consent dialog and so no ``Response`` signal to wait for --
+        unlike ``Start``, ``GetZones`` and ``SetPointerBarriers``, which go
+        through `_request`. ``Release`` is this same call shape but needs
+        an options vardict of its own, so it is not built on this.
+        """
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            raise PortalError("PyGObject is not installed")
+        Gio, GLib = gio_modules
+        _call_sync(
+            self._connection,
+            Gio,
+            GLib,
+            self._busname,
+            _OBJECT_PATH,
+            _INPUT_CAPTURE,
+            method,
+            GLib.Variant("(oa{sv})", (self.session_handle, {})),
+            None,
+            int(timeout * 1000),
+        )
+
+    def enable(self, timeout: float = _DEFAULT_TIMEOUT) -> None:
+        """Allow capture to be triggered from now on.
+
+        Does not itself divert any input -- it only arms whatever pointer
+        barriers :meth:`set_pointer_barriers` set up. The compositor decides
+        if and when a barrier is actually crossed; :meth:`wait_for_activation`
+        is how a caller finds out that it was.
+        """
+        self._plain_call("Enable", timeout=timeout)
+
+    def disable(self, timeout: float = _DEFAULT_TIMEOUT) -> None:
+        """Prevent capture from being triggered again until :meth:`enable`.
+
+        Does not end a capture already in progress -- see :meth:`release`
+        for that -- and, per the portal spec, emits no signal of its own
+        even though it can leave a `Deactivated` still in flight for a
+        capture that was already active when this was called.
+        """
+        self._plain_call("Disable", timeout=timeout)
+
+    def release(
+        self,
+        activation_id: int,
+        cursor_position: tuple[float, float] | None = None,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> None:
+        """Hand an active capture back to the desktop.
+
+        Call this as soon as whatever the capture was opened to read has
+        been read -- see the exclusivity paragraph on the class docstring.
+        ``cursor_position`` is only ever a suggestion to the compositor for
+        where to place the pointer on hand-back, in the coordinate space
+        :meth:`zones` reports; omitted, the compositor decides on its own.
+        """
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            raise PortalError("PyGObject is not installed")
+        Gio, GLib = gio_modules
+        options: dict[str, Any] = {"activation_id": GLib.Variant("u", activation_id)}
+        if cursor_position is not None:
+            options["cursor_position"] = GLib.Variant("(dd)", cursor_position)
+        _call_sync(
+            self._connection,
+            Gio,
+            GLib,
+            self._busname,
+            _OBJECT_PATH,
+            _INPUT_CAPTURE,
+            "Release",
+            GLib.Variant("(oa{sv})", (self.session_handle, options)),
+            None,
+            int(timeout * 1000),
+        )
+
+    def zones(
+        self, timeout: float = _DEFAULT_TIMEOUT
+    ) -> tuple[int, list[tuple[int, int, int, int]]]:
+        """The session's current input zones, as ``(zone_set, zones)``.
+
+        Each zone is ``(width, height, x, y)``, that exact order -- the
+        wire order the spec documents, not the ``(x, y, width, height)``
+        order `pyguitest.Screen` uses; a caller bridging the two must
+        reorder, not assume they match. ``zone_set`` must be passed back to
+        :meth:`set_pointer_barriers` unchanged, or the call fails: the
+        portal uses it to detect a caller acting on a stale zone layout
+        (a monitor unplugged since the last call, say).
+        """
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            raise PortalError("PyGObject is not installed")
+        Gio, GLib = gio_modules
+        code, results = _request(
+            self._connection,
+            Gio,
+            GLib,
+            self._busname,
+            _INPUT_CAPTURE,
+            "GetZones",
+            "(oa{sv})",
+            (self.session_handle,),
+            {},
+            timeout,
+        )
+        if code != 0:
+            raise PortalDeniedError("GetZones")
+        zone_set = results.get("zone_set", 0)
+        zones = [tuple(z) for z in results.get("zones", [])]
+        return int(zone_set), zones
+
+    def set_pointer_barriers(
+        self,
+        barriers: list[tuple[int, int, int, int, int]],
+        zone_set: int,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> list[int]:
+        """Arm pointer barriers; returns the subset the compositor refused.
+
+        Each barrier is ``(barrier_id, x1, y1, x2, y2)`` -- a non-zero id
+        the caller chooses (it comes back on the `Activated` signal that
+        the barrier triggered), then the line's endpoints, which must be
+        purely horizontal (``y1 == y2``) or purely vertical (``x1 == x2``)
+        and must sit on the outside edge of the zone union -- see the
+        portal spec for the exact placement rules; this does not validate
+        them, the compositor does, at this call.
+
+        **Calling this suspends the session.** The spec is explicit: after
+        this call the caller must call :meth:`enable` again, even if
+        capture was already enabled before. Passing an empty list clears
+        every barrier already set.
+        """
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            raise PortalError("PyGObject is not installed")
+        Gio, GLib = gio_modules
+        packed = [
+            {
+                "barrier_id": GLib.Variant("u", barrier_id),
+                "position": GLib.Variant("(iiii)", (x1, y1, x2, y2)),
+            }
+            for barrier_id, x1, y1, x2, y2 in barriers
+        ]
+        code, results = _request(
+            self._connection,
+            Gio,
+            GLib,
+            self._busname,
+            _INPUT_CAPTURE,
+            "SetPointerBarriers",
+            "(oa{sv}aa{sv}u)",
+            (self.session_handle,),
+            {},
+            timeout,
+            trailing_args=(packed, zone_set),
+        )
+        if code != 0:
+            raise PortalDeniedError("SetPointerBarriers")
+        return list(results.get("failed_barriers", []))
+
+    def wait_for_activation(self, timeout: float | None = None) -> Activation:
+        """Block until the compositor activates capture, or ``timeout``.
+
+        Only returns once a real barrier crossing has been reported --
+        which, on hardware, means a human moved a physical pointer across
+        one. There is no way to trigger this synthetically (see the class
+        docstring's third paragraph), so this call can legitimately hang
+        until someone does that, and `timeout=None` -- the default -- waits
+        for exactly as long as that takes. Pass a real number for any
+        caller that would rather fail than sit there.
+        """
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            raise PortalError("PyGObject is not installed")
+        Gio, GLib = gio_modules
+        _session_handle, options = _wait_for_signal(
+            self._connection,
+            Gio,
+            GLib,
+            self._busname,
+            _INPUT_CAPTURE,
+            "Activated",
+            self.session_handle,
+            timeout,
+        )
+        cursor = options.get("cursor_position")
+        return Activation(
+            activation_id=int(options.get("activation_id", 0)),
+            cursor_position=tuple(cursor) if cursor is not None else None,
+            barrier_id=options.get("barrier_id"),
+        )
+
+    def wait_for_deactivation(self, timeout: float | None = None) -> int:
+        """Block until the current capture ends, returning its activation_id."""
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            raise PortalError("PyGObject is not installed")
+        Gio, GLib = gio_modules
+        _session_handle, options = _wait_for_signal(
+            self._connection,
+            Gio,
+            GLib,
+            self._busname,
+            _INPUT_CAPTURE,
+            "Deactivated",
+            self.session_handle,
+            timeout,
+        )
+        return int(options.get("activation_id", 0))
+
+    def close(self) -> None:
+        """End the portal session, and close the EIS fd if unclaimed.
+
+        Idempotent, and deliberately does not call :meth:`release` first --
+        see the class docstring for why an *active* capture must be
+        released explicitly before this, not folded into cleanup here.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._eis_fd is not None and not self._eis_fd_claimed:
+            try:
+                os.close(self._eis_fd)
+            except OSError as exc:
+                logger.debug("closing the EIS fd failed: %s", exc)
+        self._eis_fd = None
+        if self._session_handle is None or self._connection is None:
+            return
+        gio_modules = _gio()
+        if gio_modules is None:  # pragma: no cover - unreachable once negotiated
+            return
+        Gio, GLib = gio_modules
+        try:
+            _close_session(
+                self._connection,
+                Gio,
+                GLib,
+                self._busname,
+                self._session_handle,
+            )
+        finally:
+            self._session_handle = None
+            self._connection = None
+
+    def __enter__(self) -> InputCaptureSession:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        # See RemoteDesktopSession.__del__ for why this closes only the fd.
+        if getattr(self, "_eis_fd_claimed", True):
+            return
+        eis_fd = getattr(self, "_eis_fd", None)
+        if eis_fd is not None:
+            try:
+                os.close(eis_fd)
+            except OSError:
+                pass
+
+    @classmethod
+    def negotiate(
+        cls,
+        *,
+        capabilities: DeviceType = DeviceType.ALL_DEVICES,
+        connection: Any = None,
+        persist_mode: PersistMode = PersistMode.NONE,
+        restore_token: str | None = None,
+        busname: str = _BUS_NAME,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> InputCaptureSession:
+        """Negotiate an InputCapture portal session and connect it to EIS.
+
+        Blocks until ``CreateSession2`` -> ``Start`` -> ``ConnectToEIS``
+        resolves, prompting the user for consent along the way unless
+        ``restore_token`` lets the portal skip that. Raises
+        :class:`PortalVersionError` if the compositor's InputCapture portal
+        predates ``CreateSession2`` (needs v2+ -- this module never speaks
+        the deprecated v1 ``CreateSession``), :class:`PortalDeniedError` if
+        ``Start`` is declined, and :class:`PortalTimeoutError` if any one
+        round trip exceeds ``timeout`` seconds.
+
+        Returns before anything is actually captured: :meth:`set_pointer_barriers`
+        and :meth:`enable` still have to be called, and even then nothing
+        happens until the compositor decides a barrier was crossed -- see
+        :meth:`wait_for_activation`. Nothing about negotiating this session
+        diverts input on its own.
+
+        ``capabilities`` reuses :class:`DeviceType` -- the InputCapture
+        portal's own bitmask documents the identical three bits
+        (``KEYBOARD``, ``POINTER``, ``TOUCHSCREEN``) for the same purpose,
+        selecting which device classes this session may ever capture.
+        ``persist_mode`` and ``restore_token`` work exactly as they do for
+        :meth:`RemoteDesktopSession.negotiate` -- see that method.
+        """
+        if restore_token is not None and persist_mode == PersistMode.NONE:
+            raise ValueError(
+                "restore_token was given with persist_mode=NONE: the portal "
+                "consumes a restore token on use and only issues a new one "
+                "when persistence is requested, so this would spend the "
+                "saved token and hand back None. Pass a persist_mode too."
+            )
+
+        gio_modules = _gio()
+        if gio_modules is None:
+            raise PortalError(
+                "PyGObject is not installed; libei.portal needs it to "
+                "negotiate an InputCapture portal session "
+                "(pip install 'python-libei[portal]')"
+            )
+        Gio, GLib = gio_modules
+
+        if connection is None:
+            try:
+                connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            except _glib_error(GLib) as exc:
+                raise PortalError(f"cannot reach the session bus: {exc}") from exc
+
+        version = _input_capture_version(connection, Gio, GLib, busname, timeout)
+        if version < _MIN_INPUT_CAPTURE_VERSION:
+            raise PortalVersionError(
+                f"InputCapture version {version} is too old for "
+                f"CreateSession2 (need {_MIN_INPUT_CAPTURE_VERSION}+)"
+            )
+
+        if capabilities == DeviceType.ALL_DEVICES:
+            types = _ALL_DEVICE_TYPES
+        else:
+            types = capabilities
+        reply = _call_sync(
+            connection,
+            Gio,
+            GLib,
+            busname,
+            _OBJECT_PATH,
+            _INPUT_CAPTURE,
+            "CreateSession2",
+            GLib.Variant(
+                "(a{sv})",
+                ({"session_handle_token": GLib.Variant("s", uuid.uuid4().hex)},),
+            ),
+            None,
+            int(timeout * 1000),
+        )
+        (results,) = reply.unpack()
+        session_handle = results.get("session_handle")
+        if not isinstance(session_handle, str):
+            raise PortalError("CreateSession2 returned no session_handle")
+
+        # Past this point a session exists inside xdg-desktop-portal, and
+        # nothing else can close it -- see RemoteDesktopSession.negotiate's
+        # identical reasoning, which this mirrors line for line.
+        try:
+            options: dict[str, Any] = {"capabilities": GLib.Variant("u", int(types))}
+            if persist_mode != PersistMode.NONE:
+                options["persist_mode"] = GLib.Variant("u", int(persist_mode))
+            if restore_token is not None:
+                options["restore_token"] = GLib.Variant("s", restore_token)
+            code, start_results = _request(
+                connection,
+                Gio,
+                GLib,
+                busname,
+                _INPUT_CAPTURE,
+                "Start",
+                "(osa{sv})",
+                (session_handle, ""),
+                options,
+                timeout,
+            )
+            if code != 0:
+                raise PortalDeniedError(
+                    "Start", "the user declined the input-capture consent dialog"
+                )
+            new_restore_token = start_results.get("restore_token")
+
+            eis_fd = _call_for_fd(
+                connection,
+                Gio,
+                GLib,
+                busname,
+                _INPUT_CAPTURE,
+                "ConnectToEIS",
+                session_handle,
+                timeout,
+            )
+        except BaseException:
+            # BaseException, not Exception: Start blocks on a human
+            # answering a consent dialog, so Ctrl-C during that wait is a
+            # routine way out of this function -- and it strands an
+            # approved session exactly as a decline does.
+            _close_session(connection, Gio, GLib, busname, session_handle)
+            raise
+
+        return cls(connection, session_handle, eis_fd, new_restore_token, busname)

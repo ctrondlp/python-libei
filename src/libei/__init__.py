@@ -15,7 +15,9 @@ Use the submodules directly:
   ``org.freedesktop.portal.RemoteDesktop`` XDG desktop portal
 - :mod:`libei.portal` -- negotiate that same portal directly over D-Bus
   instead, for ``persist_mode``/``restore_token`` support liboeffis's C API
-  doesn't expose
+  doesn't expose; also carries ``InputCaptureSession``, the read direction --
+  receiving real input from the user's own devices via
+  ``org.freedesktop.portal.InputCapture`` rather than injecting it
 
 Scope, in short: this needs a compositor speaking EI/EIS -- there is no X11
 fallback. Pointer (relative and absolute), button, keyboard, scroll, touch
@@ -29,6 +31,6 @@ the full breakdown, including which features need which libei version.
 Beta: the API is not frozen.
 """
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 __all__ = ["__version__"]
