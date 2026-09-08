@@ -1035,7 +1035,16 @@ def _wait_for_signal(
             try:
                 loop.run()
             finally:
-                if timeout_source is not None:
+                # A fired timeout source has already deregistered itself --
+                # on_timeout() returns False, which is GLib's signal to
+                # remove it -- so only remove it here when the *signal*
+                # woke the loop instead. Removing it unconditionally trips
+                # a real GLib warning ("Source ID N was not found when
+                # attempting to remove it"), confirmed live: it fired on
+                # every real timeout this session hit, never against
+                # test_portal.py's fake GLib.source_remove, which just
+                # clears pending_timeout with no complaint either way.
+                if timeout_source is not None and not timed_out:
                     GLib.source_remove(timeout_source)
     finally:
         connection.signal_unsubscribe(subscription)
