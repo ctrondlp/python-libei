@@ -31,6 +31,6 @@ the full breakdown, including which features need which libei version.
 Beta: the API is not frozen.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = ["__version__"]

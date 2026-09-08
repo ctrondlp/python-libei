@@ -1,6 +1,6 @@
 # What has actually been verified
 
-The package is beta (`0.5.0`) and the API is not frozen — expect renames
+The package is beta (`0.5.1`) and the API is not frozen — expect renames
 before 1.0. This page is what that qualifier covers, concretely: which paths
 have been driven against real libraries, which have only ever been driven
 against fakes, and which libei versions the whole thing has met.
@@ -36,16 +36,24 @@ By hand:
   relative pointer, keyboard, absolute pointer, in that order, which is the
   device race `ei`-side callers must handle; and `Session.Close()` was
   exercised. No input was injected — emulation is `libei.ei`'s job.
-- **`libei.portal.InputCaptureSession` (added 0.5.0) has never been run
-  against a real portal, unlike everything else on this list** — and unlike
-  the rest of `libei.portal`, its consent dialog is not the whole reason why.
-  Approving it exclusively diverts the approving human's own pointer,
-  keyboard or touch input away from their desktop for as long as the capture
-  stays active, so verifying it needs someone to deliberately accept that,
-  not merely click through a permission prompt. Designed against the shipped
-  D-Bus spec (`/usr/share/dbus-1/interfaces/org.freedesktop.portal.
-  InputCapture.xml`) and unit-tested against a fake connection reproducing
-  its documented shapes (`tests/test_inputcapture.py`) instead.
+- **`libei.portal.InputCaptureSession` (added 0.5.0), negotiation half only**,
+  2026-09-08, against a real Fedora 44 / GNOME Shell 50.0 session
+  (xdg-desktop-portal 1.21.1). That portal reports InputCapture **version 0**,
+  so this exercised the **v1 `CreateSession` path**: consent dialog approved,
+  a real EIS fd returned, `zones()` answering `(0, [(1920, 1080, 0, 0)])`, and
+  `Session.Close()` exercised. The v2 `CreateSession2` -> `Start` path has
+  still never been run live.
+
+  **The capture half remains unverified**, and unlike the rest of
+  `libei.portal` its consent dialog is not the whole reason why. Approving a
+  capture exclusively diverts the approving human's own pointer, keyboard or
+  touch input away from their desktop for as long as it stays active, so
+  verifying `set_pointer_barriers()` / `enable()` / `wait_for_activation()`
+  needs someone to deliberately accept that, not merely click through a
+  permission prompt. Those were designed against the shipped D-Bus spec
+  (`/usr/share/dbus-1/interfaces/org.freedesktop.portal.InputCapture.xml`)
+  and unit-tested against a fake connection reproducing its documented shapes
+  (`tests/test_inputcapture.py`) instead.
 
 ## Which libei versions this has met
 

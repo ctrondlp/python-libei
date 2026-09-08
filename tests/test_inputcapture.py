@@ -46,8 +46,8 @@ class FakeInputCaptureConnection:
 
     Three call shapes, told apart by method name: `Get` (the version
     property), `CreateSession2`/`Enable`/`Disable`/`Release` (plain calls,
-    no Request/Response), and `Start`/`GetZones`/`SetPointerBarriers`
-    (Request-shaped, exactly like RemoteDesktop's own calls -- the
+    no Request/Response), and `CreateSession` (v1)/`Start`/`GetZones`/
+    `SetPointerBarriers` (Request-shaped, exactly like RemoteDesktop's -- the
     `handle_token` lives in whichever positional argument is a dict, found
     by type rather than by a fixed index, since SetPointerBarriers's
     options argument is not last).
@@ -78,6 +78,9 @@ class FakeInputCaptureConnection:
         self.session_handle = session_handle
         self.responses = responses or {
             "Start": (0, {"capabilities": 3}),
+            # v1 CreateSession is Request-shaped too, and answers with the
+            # handle CreateSession2 returns directly.
+            "CreateSession": (0, {"session_handle": session_handle}),
             "GetZones": (0, {"zone_set": 1, "zones": [(1920, 1080, 0, 0)]}),
             "SetPointerBarriers": (0, {"failed_barriers": []}),
         }
@@ -209,15 +212,57 @@ def test_successful_negotiation_calls_every_step_in_order() -> None:
     assert session.session_handle == connection.session_handle
 
 
-def test_old_input_capture_version_is_refused() -> None:
+@pytest.mark.parametrize("version", [1, 0])
+def test_pre_v2_portal_negotiates_through_v1_create_session(version: int) -> None:
+    """v1 has no CreateSession2 and no Start -- one call does both jobs.
+
+    version 0 takes the same path: xdg-desktop-portal-gnome 50 registers the
+    whole impl interface and never sets the property, so 0 reaches us from a
+    portal that speaks v1 perfectly well.
+    """
+    connection = FakeInputCaptureConnection(version=version)
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+    assert [c[0] for c in connection.calls] == [
+        "Get",
+        "CreateSession",
+        "ConnectToEIS",
+    ]
+    assert session.session_handle == connection.session_handle
+    assert session.eis_fd == connection.fd_responses["ConnectToEIS"]
+    # v1 can never issue one: restore_token is a v2 addition to Start.
+    assert session.restore_token is None
+    # capabilities ride on CreateSession here, not on Start.
+    options = next(v for v in connection.calls[1][1] if isinstance(v, dict))
+    assert options["capabilities"].value == int(portal._ALL_DEVICE_TYPES)
+
+
+def test_v1_portal_refuses_persistence_rather_than_ignoring_it() -> None:
+    """persist_mode/restore_token are v2 additions to a method v1 lacks."""
     connection = FakeInputCaptureConnection(version=1)
     with install_fake_gi(connection):
-        with pytest.raises(portal.PortalVersionError):
-            portal.InputCaptureSession.negotiate(connection=connection)
-    # Refused before ever calling CreateSession2.
+        with pytest.raises(portal.PortalVersionError, match="cannot persist"):
+            portal.InputCaptureSession.negotiate(
+                connection=connection, persist_mode=portal.PersistMode.UNTIL_REVOKED
+            )
+    # Refused before creating anything that would need cleaning up.
     assert connection.calls == [
         ("Get", ("org.freedesktop.portal.InputCapture", "version"))
     ]
+
+
+def test_declined_v1_create_session_raises_denied_error() -> None:
+    """v1 raises its consent dialog in CreateSession, so that is the step."""
+    connection = FakeInputCaptureConnection(
+        version=1,
+        responses={"CreateSession": (1, {})},  # 1 == user cancelled
+    )
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalDeniedError) as excinfo:
+            portal.InputCaptureSession.negotiate(connection=connection)
+    assert excinfo.value.step == "CreateSession"
+    # No session handle came back, so there is nothing to Close.
+    assert [c[0] for c in connection.calls] == ["Get", "CreateSession"]
 
 
 def test_a_missing_session_handle_raises_portal_error() -> None:
