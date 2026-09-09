@@ -12,6 +12,7 @@ here is what *is* verifiable without a live desktop session.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 
@@ -126,10 +127,9 @@ def test_del_closes_eis_fd_if_never_claimed(monkeypatch: pytest.MonkeyPatch) -> 
         with pytest.raises(OSError):
             os.fstat(read_fd)
     finally:
-        try:
+        # expected: __del__ should have already closed this
+        with contextlib.suppress(OSError):
             os.close(read_fd)
-        except OSError:
-            pass  # expected: __del__ should have already closed this
         os.close(write_fd)
 
 

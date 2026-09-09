@@ -55,6 +55,7 @@ class Error(Exception):
     """
 
     def __init__(self, message: str, errno: int | None = None) -> None:
+        """Record the failure message and, where libeis reported one, errno."""
         super().__init__(message)
         self.message = message
         self.errno = errno
@@ -166,48 +167,75 @@ class _LogPriority(enum.IntEnum):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class KeyEvent:
+    """Key code and press state received on a KEYBOARD_KEY event.
+
+    ``key`` is a Linux ``KEY_*`` code, as sent by the client's
+    ``ei.Device.keyboard_key``.
+    """
+
     key: int
     is_press: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ButtonEvent:
+    """Button code and press state received on a BUTTON_BUTTON event.
+
+    ``button`` is a Linux ``BTN_*`` code, as sent by the client's
+    ``ei.Device.button``.
+    """
+
     button: int
     is_press: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class PointerEvent:
+    """Relative motion deltas, in logical pixels, from a POINTER_MOTION event."""
+
     dx: float
     dy: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class PointerAbsoluteEvent:
+    """Absolute position from a POINTER_MOTION_ABSOLUTE event.
+
+    In the logical pixel space of the region the sending device covers.
+    """
+
     x: float
     y: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ScrollEvent:
+    """Smooth scroll deltas from a SCROLL_DELTA event."""
+
     dx: float
     dy: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ScrollDiscreteEvent:
+    """Detent scroll deltas (120 per detent) from a SCROLL_DISCRETE event."""
+
     dx: int
     dy: int
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ScrollStopEvent:
+    """Which axes stopped scrolling, from a SCROLL_STOP/SCROLL_CANCEL event."""
+
     stop_x: bool
     stop_y: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TouchEvent:
+    """Touch id and position from a TOUCH_DOWN or TOUCH_MOTION event."""
+
     touchid: int
     x: float
     y: float
@@ -215,17 +243,23 @@ class TouchEvent:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TouchUpEvent:
+    """Touch id and cancellation flag from a TOUCH_UP event."""
+
     touchid: int
     is_cancel: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TextUtf8Event:
+    """UTF-8 text carried by a TEXT_UTF8 event."""
+
     text: str
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TextKeysymEvent:
+    """Keysym and press state from a TEXT_KEYSYM event."""
+
     keysym: int
     is_press: bool
 
@@ -576,8 +610,10 @@ class Device(CObject):
         return self
 
     def frame(self, timestamp: int | None = None) -> Device:
-        """Commit the events queued since the last frame as one logical
-        hardware event. ``timestamp`` defaults to the context's current time."""
+        """Commit the events queued since the last frame as one logical hardware event.
+
+        ``timestamp`` defaults to the context's current time.
+        """
         if timestamp is None:
             timestamp = _capi.libeis.now(_capi.libeis.device_get_context(self))
         _capi.libeis.device_frame(self, timestamp)
@@ -837,8 +873,11 @@ class Event(CObject):
 
     @property
     def event_type(self) -> EventType | int:
-        """The event's type, or a raw int for a value newer than this
-        package's :class:`EventType` table -- see its docstring."""
+        """The event's type.
+
+        Returns a raw int for a value newer than this package's
+        :class:`EventType` table -- see its docstring.
+        """
         raw = _capi.libeis.event_get_type(self)
         try:
             return EventType(raw)
@@ -1069,10 +1108,13 @@ class Eis(CObject):
     _wrappable = False
 
     def __init__(self, pointer: int, *, _adopt: bool = False) -> None:
-        # _adopt is accepted and forwarded for signature consistency with
-        # CObject, but with _wrappable = False, _get_or_create() never
-        # actually reaches this constructor -- Eis is always built directly
-        # via cls(cls._new()) in create_for_fd().
+        """Wrap a freshly created ``struct eis *`` and arm its log handler.
+
+        _adopt is accepted and forwarded for signature consistency with
+        CObject, but with _wrappable = False, _get_or_create() never
+        actually reaches this constructor -- Eis is always built directly
+        via cls(cls._new()) in create_for_fd().
+        """
         super().__init__(pointer, _adopt=_adopt)
         _capi.libeis.log_set_handler(self, _log_handler)
         _capi.libeis.log_set_priority(self, _LogPriority.DEBUG)
@@ -1146,7 +1188,8 @@ class Eis(CObject):
         """Read from the connection and queue any events that arrive.
 
         Call this before iterating :attr:`events`, which only drains what
-        is already queued."""
+        is already queued.
+        """
         _capi.libeis.dispatch(self)
 
     def add_client(self) -> int:
@@ -1172,14 +1215,16 @@ class Eis(CObject):
 
     @classmethod
     def create_for_fd(cls, flags: Sequence[Flag] = ()) -> Eis:
-        """Create a server using the fd backend -- the one real compositors
-        use, since it keeps each client's fd private rather than exposing a
-        connectable socket path. Call :meth:`add_client` once per
-        connection you want to accept.
+        """Create a server using the fd backend.
+
+        The one real compositors use, since it keeps each client's fd
+        private rather than exposing a connectable socket path. Call
+        :meth:`add_client` once per connection you want to accept.
 
         ``flags`` are applied here rather than left to the caller because
         :meth:`set_flag` has to run before the backend is set up, and this
-        method does both."""
+        method does both.
+        """
         server = cls(cls._new())
         for flag in flags:
             server.set_flag(flag)
@@ -1190,9 +1235,12 @@ class Eis(CObject):
 
     @classmethod
     def create_for_socket(cls, path: Path, flags: Sequence[Flag] = ()) -> Eis:
-        """Create a server listening on a Unix socket, as a compositor
-        would (this is the path a real ``ei_setup_backend_socket()`` client
-        connects to). See :meth:`create_for_fd` on ``flags``."""
+        """Create a server listening on a Unix socket.
+
+        As a compositor would (this is the path a real
+        ``ei_setup_backend_socket()`` client connects to). See
+        :meth:`create_for_fd` on ``flags``.
+        """
         server = cls(cls._new())
         for flag in flags:
             server.set_flag(flag)

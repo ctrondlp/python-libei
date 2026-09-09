@@ -9,6 +9,7 @@ the client side.
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
@@ -243,10 +244,8 @@ def test_keymap_fd_dups_so_it_can_be_closed_independently(
             os.fstat(real_fd)
         finally:
             for f in (f1, f2):
-                try:
+                with contextlib.suppress(OSError):
                     f.close()
-                except OSError:
-                    pass
     finally:
         os.close(real_fd)
         os.close(write_fd)

@@ -87,8 +87,39 @@ select = [
     "E", "W",   # pycodestyle
     "F",        # pyflakes
     "I",        # isort
-    "UP",       # pyupgrade
+    "D",        # pydocstyle
     "B",        # bugbear
+    "UP",       # pyupgrade
+    "C4",       # comprehensions
+    "SIM",      # simplification
+    "RET",      # return consistency
+    "ARG",      # unused arguments
+    "C901",     # cyclomatic complexity
+]
+ignore = [
+    "D203",    # incompatible with D211; keep no blank line before class docstring
+    "D213",    # incompatible with D212; keep the summary on the first line
+    "D401",    # properties read better as noun phrases than imperatives
+    "D105",    # __enter__/__exit__ and friends document themselves
+]
+
+[tool.ruff.lint.mccabe]
+# pyguitest's ceiling; python-libei's own worst case (InputCaptureSession.
+# negotiate(), forking on portal version) sits at 14, just under it. A
+# ceiling on what gets added, not a claim everything else is close to it.
+max-complexity = 15
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use fakes with deliberately unused arguments and multi-with blocks
+# that read better nested; matching pyguitest's/pyguitest-recorder's own
+# per-file-ignores for the same reasons.
+"tests/*" = [
+    "ARG001", "ARG002", "ARG003", "ARG005",  # fakes accept arguments they ignore
+    "SIM117",                      # nested with-blocks read better in tests
+    "D100", "D101", "D102", "D103", "D104", "D107",
 ]
 
 [tool.mypy]

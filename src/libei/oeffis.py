@@ -1,5 +1,7 @@
-"""Pythonic wrapper around liboeffis -- negotiates an EIS connection through
-the ``org.freedesktop.portal.RemoteDesktop`` XDG desktop portal.
+"""Pythonic wrapper around liboeffis.
+
+Negotiates an EIS connection through the
+``org.freedesktop.portal.RemoteDesktop`` XDG desktop portal.
 
 This is the path a sandboxed or otherwise non-privileged client uses to get
 an EI socket: it asks the portal, the user is shown a consent dialog, and on
@@ -52,6 +54,7 @@ class DisconnectedError(Exception):
     """The portal session ended unexpectedly (error, or denied by the user)."""
 
     def __init__(self, message: str | None) -> None:
+        """Record why the session ended."""
         super().__init__(message)
         self.message = message
 
@@ -60,6 +63,7 @@ class SessionClosedError(DisconnectedError):
     """The portal explicitly closed the session (not necessarily an error)."""
 
     def __init__(self) -> None:
+        """Build the fixed "Session closed" message."""
         super().__init__(message="Session closed")
 
 
@@ -100,6 +104,7 @@ class Oeffis:
     """
 
     def __init__(self) -> None:
+        """Create the underlying liboeffis context (no portal call yet)."""
         pointer = _capi.liboeffis.new(None)
         if not pointer:
             raise DisconnectedError("oeffis_new() returned NULL")

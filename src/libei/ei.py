@@ -87,6 +87,7 @@ class Error(Exception):
     """
 
     def __init__(self, message: str, errno: int | None = None) -> None:
+        """Record the failure message and, where libei reported one, errno."""
         super().__init__(message)
         self.message = message
         self.errno = errno
@@ -199,6 +200,12 @@ class _LogPriority(enum.IntEnum):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class XkbModifiersEvent:
+    """XKB modifier state from a KEYBOARD_MODIFIERS event.
+
+    ``depressed``/``latched``/``locked`` are XKB's own mod-state bitmasks;
+    ``group`` is the active keyboard layout group.
+    """
+
     depressed: int
     latched: int
     locked: int
@@ -207,48 +214,76 @@ class XkbModifiersEvent:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class KeyEvent:
+    """Key code and press state from a KEYBOARD_KEY event.
+
+    ``key`` is a Linux ``KEY_*`` code, the same numbering
+    :meth:`Device.keyboard_key` sends.
+    """
+
     key: int
     is_press: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ButtonEvent:
+    """Button code and press state from a BUTTON_BUTTON event.
+
+    ``button`` is a Linux ``BTN_*`` code, the same numbering
+    :meth:`Device.button` sends.
+    """
+
     button: int
     is_press: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class PointerEvent:
+    """Relative motion deltas, in logical pixels, from a POINTER_MOTION event."""
+
     dx: float
     dy: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class PointerAbsoluteEvent:
+    """Absolute position from a POINTER_MOTION_ABSOLUTE event.
+
+    In the logical pixel space of the :class:`Region` the emitting device
+    covers -- see :meth:`Event.pointer_absolute_event`.
+    """
+
     x: float
     y: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ScrollEvent:
+    """Smooth scroll deltas from a SCROLL_DELTA event."""
+
     dx: float
     dy: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ScrollDiscreteEvent:
+    """Detent scroll deltas (120 per detent) from a SCROLL_DISCRETE event."""
+
     dx: int
     dy: int
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ScrollStopEvent:
+    """Which axes stopped scrolling, from a SCROLL_STOP/SCROLL_CANCEL event."""
+
     stop_x: bool
     stop_y: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TouchEvent:
+    """Touch id and position from a TOUCH_DOWN or TOUCH_MOTION event."""
+
     touchid: int
     x: float
     y: float
@@ -256,17 +291,26 @@ class TouchEvent:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TouchUpEvent:
+    """Touch id and cancellation flag from a TOUCH_UP event.
+
+    See :meth:`Event.touch_up_event` for when ``is_cancel`` is trustworthy.
+    """
+
     touchid: int
     is_cancel: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TextUtf8Event:
+    """UTF-8 text carried by a TEXT_UTF8 event."""
+
     text: str
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TextKeysymEvent:
+    """Keysym and press state from a TEXT_KEYSYM event."""
+
     keysym: int
     is_press: bool
 
@@ -545,9 +589,10 @@ class Device(CObject):
         return self
 
     def frame(self, timestamp: int | None = None) -> Device:
-        """Commit the events queued since the last frame as one logical
-        hardware event. ``timestamp`` defaults to the context's current
-        time."""
+        """Commit the events queued since the last frame as one logical hardware event.
+
+        ``timestamp`` defaults to the context's current time.
+        """
         if timestamp is None:
             timestamp = _capi.libei.now(_capi.libei.device_get_context(self))
         _capi.libei.device_frame(self, timestamp)
@@ -564,8 +609,10 @@ class Device(CObject):
         return self
 
     def button(self, button: int, is_press: bool) -> Device:
-        """Queue a button press or release. ``button`` is a Linux
-        ``BTN_*`` code (e.g. ``0x110`` for ``BTN_LEFT``)."""
+        """Queue a button press or release.
+
+        ``button`` is a Linux ``BTN_*`` code (e.g. ``0x110`` for ``BTN_LEFT``).
+        """
         _capi.libei.device_button_button(self, button, is_press)
         return self
 
@@ -760,8 +807,11 @@ class Event(CObject):
 
     @property
     def event_type(self) -> EventType | int:
-        """The event's type, or a raw int for a value newer than this
-        package's :class:`EventType` table -- see its docstring."""
+        """The event's type.
+
+        Returns a raw int for a value newer than this package's
+        :class:`EventType` table -- see its docstring.
+        """
         raw = _capi.libei.event_get_type(self)
         try:
             return EventType(raw)
@@ -1009,11 +1059,14 @@ class Context(CObject):
     _wrappable = False
 
     def __init__(self, pointer: int, *, _adopt: bool = False) -> None:
-        # _adopt is accepted and forwarded for signature consistency with
-        # CObject, but with _wrappable = False, _get_or_create() never
-        # actually reaches this constructor -- Context (and Sender/
-        # Receiver) are always built directly via cls(cls._new()) in
-        # create_for_fd()/create_for_socket().
+        """Wrap a freshly created ``struct ei *`` and arm its log handler.
+
+        _adopt is accepted and forwarded for signature consistency with
+        CObject, but with _wrappable = False, _get_or_create() never
+        actually reaches this constructor -- Context (and Sender/
+        Receiver) are always built directly via cls(cls._new()) in
+        create_for_fd()/create_for_socket().
+        """
         super().__init__(pointer, _adopt=_adopt)
         self._name: str | None = None
         _capi.libei.log_set_handler(self, _log_handler)
@@ -1081,7 +1134,8 @@ class Context(CObject):
         """Use an already-connected socket as the transport.
 
         libei takes ownership of a raw int fd and closes it itself; a file
-        object is duplicated first, so the caller's own object stays valid."""
+        object is duplicated first, so the caller's own object stays valid.
+        """
         # ei_setup_backend_fd() takes ownership of the fd and will close it
         # itself. A raw int is assumed to already be one the caller is
         # handing off (matching what eis.Eis.add_client()/oeffis.eis_fd
@@ -1099,7 +1153,8 @@ class Context(CObject):
         """Connect to an EIS socket by path.
 
         ``None`` uses ``$LIBEI_SOCKET``; a relative path is resolved
-        against ``$XDG_RUNTIME_DIR``."""
+        against ``$XDG_RUNTIME_DIR``.
+        """
         encoded = os.fspath(path).encode("utf-8") if path else None
         err = _capi.libei.setup_backend_socket(self, encoded)
         if err < 0:
@@ -1162,7 +1217,8 @@ class Context(CObject):
         """Read from the connection and queue any events that arrive.
 
         Call this before iterating :attr:`events`, which only drains what
-        is already queued."""
+        is already queued.
+        """
         _capi.libei.dispatch(self)
 
 

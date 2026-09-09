@@ -1,5 +1,7 @@
-"""Negotiate an EIS connection by driving a portal directly over D-Bus,
-rather than through :mod:`libei.oeffis`.
+"""Negotiate an EIS connection by driving a portal directly over D-Bus.
+
+Not through :mod:`libei.oeffis` -- see that module instead for the simpler,
+liboeffis-backed path.
 
 Two portals, two directions. :class:`RemoteDesktopSession` negotiates
 ``org.freedesktop.portal.RemoteDesktop`` to *inject* input; below it,
@@ -69,6 +71,7 @@ Three things worth knowing before building on this:
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import logging
 import os
@@ -161,6 +164,7 @@ class PortalTimeoutError(PortalError):
     """
 
     def __init__(self, step: str, timeout: float) -> None:
+        """Name which step timed out and after how long."""
         super().__init__(f"{step} did not answer within {timeout:g}s")
         self.step = step
         self.timeout = timeout
@@ -175,6 +179,7 @@ class PortalDeniedError(PortalError):
     """
 
     def __init__(self, step: str, message: str | None = None) -> None:
+        """Name which step was refused and, where the portal gave one, why."""
         super().__init__(message or f"{step} was not approved")
         self.step = step
         self.message = message
@@ -584,6 +589,11 @@ class RemoteDesktopSession:
         session_handle: str | None = None,
         busname: str = _BUS_NAME,
     ) -> None:
+        """Hold a negotiated session's handle, connection and EIS fd.
+
+        Not for direct use -- built by :meth:`negotiate` once ``Start`` and
+        ``ConnectToEIS`` have both already succeeded.
+        """
         self._connection = connection
         self._eis_fd: int | None = eis_fd
         self._session_handle = session_handle
@@ -687,10 +697,9 @@ class RemoteDesktopSession:
             return
         eis_fd = getattr(self, "_eis_fd", None)
         if eis_fd is not None:
-            try:
+            # an exception here is only printed to stderr anyway
+            with contextlib.suppress(OSError):
                 os.close(eis_fd)
-            except OSError:
-                pass  # an exception here is only printed to stderr anyway
 
     @classmethod
     def negotiate(
@@ -1058,8 +1067,9 @@ def _wait_for_signal(
 
 
 class Activation(NamedTuple):
-    """One ``Activated`` signal's payload -- see
-    :meth:`InputCaptureSession.wait_for_activation`.
+    """One ``Activated`` signal's payload.
+
+    See :meth:`InputCaptureSession.wait_for_activation`.
     """
 
     activation_id: int
@@ -1129,6 +1139,11 @@ class InputCaptureSession:
         restore_token: str | None,
         busname: str = _BUS_NAME,
     ) -> None:
+        """Hold a negotiated capture session's handle, connection and EIS fd.
+
+        Not for direct use -- built by :meth:`negotiate` once ``ConnectToEIS``
+        has already succeeded.
+        """
         self._connection = connection
         self._session_handle: str | None = session_handle
         self._eis_fd: int | None = eis_fd
@@ -1427,10 +1442,8 @@ class InputCaptureSession:
             return
         eis_fd = getattr(self, "_eis_fd", None)
         if eis_fd is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(eis_fd)
-            except OSError:
-                pass
 
     @classmethod
     def negotiate(

@@ -8,6 +8,7 @@ real library -- they run the same with or without libei installed.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 from ctypes import c_int
@@ -313,10 +314,8 @@ def test_keymap_fd_dups_so_it_can_be_closed_independently(
             os.fstat(real_fd)  # still open after closing the second dup too
         finally:
             for f in (f1, f2):
-                try:
+                with contextlib.suppress(OSError):
                     f.close()
-                except OSError:
-                    pass
     finally:
         os.close(real_fd)
         os.close(write_fd)

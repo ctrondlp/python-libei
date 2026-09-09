@@ -7,6 +7,19 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Ruff now enforces pydocstyle plus the same complexity/simplification/
+  argument rules pyguitest and pyguitest-recorder already gate on** (`D`,
+  `C4`, `SIM`, `RET`, `ARG`, `C901`, ceiling 15) -- this repo's config had
+  never turned them on. Closing the gap surfaced two real things: eight
+  `try`/`except OSError: pass` blocks (tests plus two `__del__` methods in
+  `portal.py`) rewritten as `contextlib.suppress(OSError)`, and ~40 missing
+  docstrings, mostly one-line additions to the per-event dataclasses in
+  `ei.py`/`eis.py` naming the numbering scheme a field uses (e.g.
+  `KeyEvent.key` is a Linux `KEY_*` code, matching `Device.keyboard_key()`)
+  since that wasn't stated on the class itself.
+
 ### Fixed
 
 - **`_wait_for_signal` (used by `InputCaptureSession.wait_for_activation`/
