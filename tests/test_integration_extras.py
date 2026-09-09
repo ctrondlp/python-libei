@@ -1,8 +1,8 @@
-"""End-to-end tests for the accessors and capabilities added on top of the
-core injection path, against the real libei/libeis.
+"""End-to-end tests for the accessors and capabilities added on top of the core path.
 
-``test_integration_socketpair.py`` proves the connect/negotiate/inject path
-works; this file covers the parts that were only bound later -- text input,
+Against the real libei/libeis. ``test_integration_socketpair.py`` proves the
+connect/negotiate/inject path works; this file covers the parts that were
+only bound later -- text input,
 touch cancellation, ping/pong round trips, region mapping ids and keymap
 transfer -- plus the two silent failures those made worth fixing: a keymap
 fd that arrives at EOF, and accessors that return zeros for the wrong event

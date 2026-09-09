@@ -21,6 +21,7 @@ shapes instead.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from typing import Any
@@ -591,10 +592,8 @@ def test_close_closes_an_unclaimed_eis_fd() -> None:
         with pytest.raises(OSError):
             os.fstat(read_fd)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.close(read_fd)
-        except OSError:
-            pass
         os.close(write_fd)
 
 

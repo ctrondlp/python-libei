@@ -19,6 +19,7 @@ subscribed.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -92,10 +93,9 @@ def _close_fake_fds() -> Iterator[None]:
     yield
     while _OPEN_PIPES:
         for fd in _OPEN_PIPES.pop():
-            try:
+            # already closed by the code under test, which is the point
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass  # already closed by the code under test, which is the point
 
 
 class FakeMainLoop:
@@ -562,10 +562,9 @@ def test_close_closes_an_unclaimed_eis_fd() -> None:
         with pytest.raises(OSError):
             os.fstat(read_fd)
     finally:
-        try:
+        # expected: close() should already have closed it
+        with contextlib.suppress(OSError):
             os.close(read_fd)
-        except OSError:
-            pass  # expected: close() should already have closed it
         os.close(write_fd)
 
 
