@@ -486,10 +486,16 @@ def _request(
             try:
                 loop.run()
             finally:
-                # Removing an already-fired one-shot source is harmless
-                # (GLib warns at most); leaking a live one holds a reference
-                # to this closure and fires it into a dead loop later.
-                GLib.source_remove(timeout_source)
+                # on_timeout() returns False, which is GLib's own signal to
+                # deregister a fired one-shot source -- removing it again
+                # here trips a real "Source ID N was not found when
+                # attempting to remove it" warning, the same bug already
+                # fixed for _wait_for_signal below. Only remove it when the
+                # *Response* woke the loop instead; leaving a live source in
+                # that case holds a reference to this closure and fires it
+                # into a dead loop on some later request.
+                if not timed_out:
+                    GLib.source_remove(timeout_source)
     finally:
         for subscription in subscriptions:
             connection.signal_unsubscribe(subscription)
