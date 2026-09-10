@@ -47,6 +47,16 @@ All notable changes to python-libei are recorded here. The format follows
   tests' fake `GLib.source_remove` doesn't reproduce the warning, so it was
   invisible to the suite.
 
+- **`_request` had the identical double-remove bug as its sibling above,
+  never fixed alongside it.** `_request` backs every Request-returning
+  RemoteDesktop/InputCapture call (`CreateSession`, `SelectDevices`,
+  `Start`, `GetZones`, `SetPointerBarriers`) -- far more heavily used than
+  `_wait_for_signal` -- so this covers the single most realistic timeout
+  scenario in the module: a consent dialog nobody answers. Found by a
+  self-review sweep after the `_wait_for_signal` fix, not live; fixed the
+  same way, with a test mirroring `test_inputcapture.py`'s existing one for
+  `_wait_for_signal`.
+
 ## [0.5.1] - 2026-09-08
 
 ### Fixed

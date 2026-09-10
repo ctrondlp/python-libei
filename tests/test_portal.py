@@ -549,6 +549,50 @@ def test_request_that_never_answers_times_out() -> None:
     assert excinfo.value.timeout == 0.01
 
 
+def test_request_does_not_double_remove_the_timeout_source_on_timeout() -> None:
+    # The same bug already fixed in _wait_for_signal (see
+    # test_inputcapture.py's test of the same name): on_timeout() returning
+    # False already deregisters a one-shot GLib timeout source, so calling
+    # GLib.source_remove on it again logs a real "Source ID N was not found
+    # when attempting to remove it" warning. _request() had this fixed only
+    # in its sibling, never here, even though _request is the far more
+    # heavily used of the two (CreateSession, SelectDevices, Start, GetZones,
+    # SetPointerBarriers all go through it) -- so this is the single most
+    # realistic timeout scenario in the module: a consent dialog nobody
+    # answers. The fake source_remove doesn't model an already-deregistered
+    # source (it just clears pending_timeout either way), so only asserting
+    # the call was never made catches this.
+    class SilentConnection(FakeConnection):
+        def call_sync(
+            self,
+            bus_name: Any,
+            object_path: Any,
+            interface: Any,
+            method: str,
+            parameters: FakeVariant | None,
+            reply_type: Any,
+            flags: Any,
+            timeout: Any,
+            cancellable: Any,
+        ) -> FakeReply:
+            self.calls.append(
+                (method, None if parameters is None else parameters.value)
+            )
+            if method == "Get":
+                return FakeReply((self.version,))
+            return FakeReply(())  # accepted, but no Response ever fires
+
+    connection = SilentConnection()
+    with install_fake_gi(connection):
+        glib = sys.modules["gi.repository.GLib"]
+        with mock.patch.object(glib, "source_remove") as source_remove:
+            with pytest.raises(portal.PortalTimeoutError):
+                portal.RemoteDesktopSession.negotiate(
+                    connection=connection, timeout=0.01
+                )
+    source_remove.assert_not_called()
+
+
 def test_close_closes_an_unclaimed_eis_fd() -> None:
     # The fd arrives dup'd and owned. If nobody ever reads `eis_fd` (so it
     # was never handed to a Sender, which would close it itself), nothing
