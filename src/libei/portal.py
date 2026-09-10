@@ -989,10 +989,10 @@ def _wait_for_signal(
     busname: str,
     interface: str,
     signal: str,
-    path: str,
+    session_handle: str,
     timeout: float | None,
 ) -> tuple[Any, ...]:
-    """Block for one emission of ``signal`` on ``path``, unpacked.
+    """Block for one emission of ``signal`` for ``session_handle``, unpacked.
 
     Unlike `_request`, nothing here *triggers* the signal: ``Activated`` and
     ``Deactivated`` fire whenever the compositor decides a pointer barrier
@@ -1001,6 +1001,22 @@ def _wait_for_signal(
     late) or not for a long time. ``timeout=None`` waits indefinitely --
     the read a caller wants when there is nothing else useful to do but
     wait for a human to move the pointer.
+
+    **These signals are emitted on the portal object, not on the session
+    object.** Subscribing with the session handle as the D-Bus object path
+    -- the obvious reading of "a signal for this session", and what this
+    did until 2026-09-09 -- matches nothing, delivers nothing, and is
+    indistinguishable from a compositor that never fires the signal at all:
+    it cost this project a live investigation across two GNOME versions, a
+    standalone C reproducer and an upstream Mutter bug report before an
+    xdg-desktop-portal developer pointed out the mistake. The session is
+    identified by the signal's own first argument instead (``o
+    session_handle``, per the portal spec), so the subscription is on
+    `_OBJECT_PATH` and the filtering happens here, on the payload. It is
+    deliberately not done with ``signal_subscribe``'s ``arg0`` filter: the
+    D-Bus specification restricts plain ``arg0=`` match rules to arguments
+    of type STRING, and this one is an OBJECT_PATH, which is the same shape
+    of silent non-delivery all over again.
     """
     loop = GLib.MainLoop()
     result: dict[str, Any] = {}
@@ -1017,7 +1033,22 @@ def _wait_for_signal(
     ) -> None:
         if result:  # a subscription that outlives its own wait can fire twice
             return
-        result["args"] = params.unpack()
+        args = params.unpack()
+        if args[0] != session_handle:
+            # Logged, not silently dropped: this filter can hide a signal
+            # that *did* arrive just as effectively as the wrong-path
+            # subscription above did, and the two are indistinguishable
+            # from the outside -- both look exactly like a compositor that
+            # never fired. One debug line is what tells them apart.
+            logger.debug(
+                "ignoring %s for session %s while waiting for %s",
+                signal,
+                args[0],
+                session_handle,
+            )
+            return
+        logger.debug("received %s for session %s", signal, session_handle)
+        result["args"] = args
         loop.quit()
 
     def on_timeout() -> bool:
@@ -1030,11 +1061,19 @@ def _wait_for_signal(
         busname,
         interface,
         signal,
-        path,
+        _OBJECT_PATH,
         None,
         Gio.DBusSignalFlags.NONE,
         on_signal,
         None,
+    )
+    logger.debug(
+        "waiting up to %s for %s.%s on %s for session %s",
+        "forever" if timeout is None else f"{timeout:g}s",
+        interface,
+        signal,
+        _OBJECT_PATH,
+        session_handle,
     )
     try:
         if not result:
@@ -1344,7 +1383,18 @@ class InputCaptureSession:
         )
         if code != 0:
             raise PortalDeniedError("SetPointerBarriers")
-        return list(results.get("failed_barriers", []))
+        failed = list(results.get("failed_barriers", []))
+        # A partially-refused set is the quiet failure here: the call
+        # succeeds, some barriers stand, and an edge the caller believes is
+        # armed simply never triggers. Callers see only the returned list,
+        # which they may or may not act on -- this says it either way.
+        logger.debug(
+            "SetPointerBarriers: %d requested %s, refused: %s",
+            len(barriers),
+            [b[0] for b in barriers],
+            failed or "none",
+        )
+        return failed
 
     def wait_for_activation(self, timeout: float | None = None) -> Activation:
         """Block until the compositor activates capture, or ``timeout``.

@@ -55,6 +55,21 @@ By hand:
   and unit-tested against a fake connection reproducing its documented shapes
   (`tests/test_inputcapture.py`) instead.
 
+  **What that cost, on record:** `wait_for_activation()`/
+  `wait_for_deactivation()` subscribed to their signals on the session's own
+  object path, where the portal never emits them — so they always ran to
+  their timeout. The fake connection modelled the same misreading (it fired
+  a pending signal on whatever path was subscribed), so a wrong
+  subscription and a wrong fake agreed all the way to a green suite, and
+  the live symptom — a wait that never returns — was indistinguishable from
+  a compositor that never activates capture. It was diagnosed as the
+  latter, across two GNOME versions, a standalone C reproducer and an
+  upstream Mutter report, before an xdg-desktop-portal developer identified
+  it (2026-09-09). Fixed, with the fake corrected to emit on the portal
+  object as a real one does. Two things generalise: a fake written from the
+  same assumption as the code proves only that they agree, and a
+  never-arriving signal looks exactly like a signal never sent.
+
 ## Which libei versions this has met
 
 - Verified against **libei 1.6.0** on Fedora 44 / GNOME 50.4.
