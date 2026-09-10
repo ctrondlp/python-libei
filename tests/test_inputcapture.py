@@ -64,6 +64,13 @@ class FakeInputCaptureConnection:
     it. A test that wants the *timeout* path instead simply leaves both at
     their default of None; FakeMainLoop.pending_timeout picks up from there
     exactly as it does for every other timeout test in this package.
+
+    Both fire on the **portal's** object path, carrying the session handle
+    as the signal's first argument, because that is what a real portal
+    does -- see `_wait_for_signal`'s docstring for what modelling this
+    wrongly hid. `signal_session_handle` overrides that first argument
+    alone, so a test can deliver a *different* session's activation to a
+    subscriber and prove it is ignored.
     """
 
     def __init__(
@@ -75,8 +82,10 @@ class FakeInputCaptureConnection:
         session_handle: str = "/session/1",
         pending_activated: dict[str, Any] | None = None,
         pending_deactivated: dict[str, Any] | None = None,
+        signal_session_handle: str | None = None,
     ) -> None:
         self.session_handle = session_handle
+        self.signal_session_handle = signal_session_handle or session_handle
         self.responses = responses or {
             "Start": (0, {"capabilities": 3}),
             # v1 CreateSession is Request-shaped too, and answers with the
@@ -170,12 +179,24 @@ class FakeInputCaptureConnection:
         elif signal == "Activated" and self._pending_activated is not None:
             payload = self._pending_activated
             self._pending_activated = None
-            callback(None, None, path, None, "Activated", FakeReply((path, payload)))
+            self._emit_session_signal(callback, "Activated", payload)
         elif signal == "Deactivated" and self._pending_deactivated is not None:
             payload = self._pending_deactivated
             self._pending_deactivated = None
-            callback(None, None, path, None, "Deactivated", FakeReply((path, payload)))
+            self._emit_session_signal(callback, "Deactivated", payload)
         return self._next_subscription_id
+
+    def _emit_session_signal(
+        self, callback: Any, signal: str, payload: dict[str, Any]
+    ) -> None:
+        callback(
+            None,
+            None,
+            portal._OBJECT_PATH,
+            None,
+            signal,
+            FakeReply((self.signal_session_handle, payload)),
+        )
 
     def signal_unsubscribe(self, subscription_id: int) -> None:
         key = self._subscription_paths.pop(subscription_id, None)
@@ -441,6 +462,23 @@ def test_set_pointer_barriers_reports_the_failed_ones() -> None:
     assert failed == [2]
 
 
+def test_partially_refused_barriers_are_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A partial refusal is returned but nothing forces a caller to look at
+    # it, and the symptom -- one edge that never triggers -- is silent. The
+    # log line is what makes it visible without reading the return value.
+    connection = FakeInputCaptureConnection(
+        responses={"SetPointerBarriers": (0, {"failed_barriers": [2]})}
+    )
+    with install_fake_gi(connection), caplog.at_level("DEBUG", logger="libei.portal"):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        session.set_pointer_barriers(
+            [(1, 0, 0, 1919, 0), (2, 1920, 0, 1920, 1079)], zone_set=7
+        )
+    assert "refused: [2]" in caplog.text
+
+
 def test_an_empty_barrier_list_clears_every_barrier() -> None:
     connection = FakeInputCaptureConnection()
     with install_fake_gi(connection):
@@ -551,16 +589,80 @@ def test_wait_for_activation_does_not_double_remove_the_timeout_source_on_timeou
     source_remove.assert_not_called()
 
 
-def test_wait_for_activation_subscribes_on_this_sessions_own_path() -> None:
-    # A caller managing several sessions on one MainContext must only ever
-    # hear about its own session's activation, not another's.
+def test_wait_for_activation_subscribes_on_the_portal_not_the_session() -> None:
+    # The bug that made this whole feature look like a compositor gap: the
+    # portal emits Activated on its own object, never on the session's, so
+    # a subscription filtered to the session handle hears nothing at all --
+    # identical, from the caller's side, to a compositor that never fires.
+    # See _wait_for_signal's docstring.
     connection = FakeInputCaptureConnection()
     with install_fake_gi(connection):
         session = portal.InputCaptureSession.negotiate(connection=connection)
         with pytest.raises(portal.PortalTimeoutError):
             session.wait_for_activation(timeout=0.01)
-    subscribed_paths = {key[2] for key in connection.signal_subscriptions}
-    assert connection.session_handle in subscribed_paths
+    subscribed = {
+        key[2] for key in connection.signal_subscriptions if key[1] == "Activated"
+    }
+    assert subscribed == {portal._OBJECT_PATH}
+    assert connection.session_handle not in subscribed
+
+
+def test_wait_for_deactivation_subscribes_on_the_portal_not_the_session() -> None:
+    # Same fix, second call site -- the original bug was in both.
+    connection = FakeInputCaptureConnection()
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalTimeoutError):
+            session.wait_for_deactivation(timeout=0.01)
+    subscribed = {
+        key[2] for key in connection.signal_subscriptions if key[1] == "Deactivated"
+    }
+    assert subscribed == {portal._OBJECT_PATH}
+
+
+def test_wait_for_activation_ignores_another_sessions_activation() -> None:
+    # Subscribing on the shared portal object means hearing every session's
+    # signals, so the session handle in the payload is now what tells them
+    # apart. A foreign one must leave the wait running -- here, until it
+    # times out.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 5, "cursor_position": (1.0, 2.0)},
+        signal_session_handle="/session/someone-else",
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalTimeoutError):
+            session.wait_for_activation(timeout=0.01)
+
+
+def test_ignoring_another_sessions_activation_says_so_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The point of the log line, not incidental coverage: dropping a signal
+    # here is invisible from outside and looks identical to a compositor
+    # that never fired one -- which is the mistake this whole code path is
+    # being fixed for. A silent filter would just move that trap.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 5},
+        signal_session_handle="/session/someone-else",
+    )
+    with install_fake_gi(connection), caplog.at_level("DEBUG", logger="libei.portal"):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalTimeoutError):
+            session.wait_for_activation(timeout=0.01)
+    assert "/session/someone-else" in caplog.text
+    assert connection.session_handle in caplog.text
+
+
+def test_wait_for_deactivation_ignores_another_sessions_deactivation() -> None:
+    connection = FakeInputCaptureConnection(
+        pending_deactivated={"activation_id": 5},
+        signal_session_handle="/session/someone-else",
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalTimeoutError):
+            session.wait_for_deactivation(timeout=0.01)
 
 
 def test_wait_for_deactivation_returns_the_activation_id() -> None:

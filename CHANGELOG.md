@@ -22,6 +22,20 @@ All notable changes to python-libei are recorded here. The format follows
 
 ### Fixed
 
+- **`InputCaptureSession.wait_for_activation()`/`wait_for_deactivation()`
+  now actually receive their signals.** Both subscribed to `Activated`/
+  `Deactivated` with the *session handle* as the D-Bus object path, but the
+  portal emits these on its own object (`/org/freedesktop/portal/desktop`),
+  identifying the session by the signal's first argument instead. The
+  subscription therefore matched nothing and the wait always ran to its
+  timeout -- indistinguishable, from the caller's side, from a compositor
+  that never activates capture, which is exactly how it was misdiagnosed:
+  as a Mutter bug, across two GNOME versions, a standalone C reproducer and
+  an upstream bug report, until an xdg-desktop-portal developer pointed out
+  the mistake. Now subscribes on the portal object and filters on the
+  payload's session handle, so a second concurrent session's signals are
+  ignored rather than answered.
+
 - **`_wait_for_signal` (used by `InputCaptureSession.wait_for_activation`/
   `wait_for_deactivation`) no longer double-removes its own GLib timeout
   source on timeout**, which logged a real GLib warning ("Source ID N was
