@@ -46,11 +46,12 @@ By hand:
 
   **The capture half remains unverified**, and unlike the rest of
   `libei.portal` its consent dialog is not the whole reason why. Approving a
-  capture exclusively diverts the approving human's own pointer, keyboard or
-  touch input away from their desktop for as long as it stays active, so
-  verifying `set_pointer_barriers()` / `enable()` / `wait_for_activation()`
-  needs someone to deliberately accept that, not merely click through a
-  permission prompt. Those were designed against the shipped D-Bus spec
+  capture exclusively diverts the approving developer's own pointer,
+  keyboard or touch input away from their desktop for as long as it stays
+  active, so verifying `set_pointer_barriers()` / `enable()` /
+  `wait_for_activation()` needs someone to deliberately accept that, not
+  merely click through a permission prompt.
+  Those were designed against the shipped D-Bus spec
   (`/usr/share/dbus-1/interfaces/org.freedesktop.portal.InputCapture.xml`)
   and unit-tested against a fake connection reproducing its documented shapes
   (`tests/test_inputcapture.py`) instead.

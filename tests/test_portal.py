@@ -808,7 +808,7 @@ def test_a_failed_connect_to_eis_closes_the_portal_session() -> None:
 
 
 def test_an_interrupted_consent_dialog_closes_the_portal_session() -> None:
-    # Why the cleanup catches BaseException: Start blocks on a human, so
+    # Why the cleanup catches BaseException: Start blocks on a user, so
     # Ctrl-C during that wait is a routine way out of negotiate() -- and it
     # strands an approved session exactly as a decline does.
     class InterruptedConnection(FakeConnection):

@@ -8,6 +8,7 @@ the [project README](../README.md).
 
 | File | What's in it |
 |------|---------------|
+| [install.md](install.md) | The Python package, the native libraries per distribution, the optional `portal` extra, and how to check what actually loaded |
 | [getting-started.md](getting-started.md) | Install through a first pointer motion on a real desktop, and the one concept (`frame()`) everything depends on |
 | [recipes.md](recipes.md) | Keyboards, touch, absolute positioning, consent persistence, receiver mode, running your own EIS server |
 | [troubleshooting.md](troubleshooting.md) | The "when nothing happens" checklist — nearly every failure in libei is silent |

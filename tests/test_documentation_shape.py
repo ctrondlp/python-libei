@@ -259,6 +259,61 @@ def test_version_is_declared_identically_in_both_places() -> None:
     )
 
 
+_DOCS_ROOT = _PROJECT_ROOT / "docs"
+_INLINE_LINK = re.compile(r"\]\(([^)\s]+)\)")
+_CONTENTS_ENTRY = re.compile(r"^- \[[^\]]+\]\(#([^)]+)\)$", re.MULTILINE)
+_HEADING = re.compile(r"^#{1,6} (.+)$", re.MULTILINE)
+
+
+def _documentation_pages() -> list[Path]:
+    """The README plus every page under docs/, which is the user set."""
+    return [_README, *sorted(_DOCS_ROOT.rglob("*.md"))]
+
+
+def _slug(heading: str) -> str:
+    """The anchor a heading gets, insensitive to how a slugger trims.
+
+    Runs of dashes are collapsed and both ends stripped, so a heading naming a
+    ``--flag`` matches a contents entry written with one leading dash as well as
+    the two a strict slugger would produce. What is asked is "is there a section
+    for this", not "is the anchor byte-exact".
+    """
+    text = re.sub(r"[^a-z0-9 \-_]", "", heading.strip().lower())
+    return re.sub(r"-+", "-", text.replace(" ", "-")).strip("-")
+
+
+def test_relative_links_point_at_something_that_exists() -> None:
+    # A page linked from another page is the only way most readers find it, so
+    # a move that updates the file but not the links makes it unreachable
+    # without breaking anything a reader can see.
+    pages = _documentation_pages()
+    assert len(pages) > 5, "the docs set looks empty; check the glob"
+    for page in pages:
+        for target in _INLINE_LINK.findall(page.read_text()):
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            path = target.split("#", 1)[0]
+            if not path:
+                continue
+            assert (page.parent / path).exists(), (
+                f"{page.name} links to {path}, which does not exist"
+            )
+
+
+def test_each_pages_own_contents_resolves() -> None:
+    # The recipes and troubleshooting pages open with a catalogue of their own
+    # sections. A section renamed without the catalogue moving leaves a link
+    # that silently goes nowhere -- the page still renders, which is why
+    # nothing catches it.
+    for page in _documentation_pages():
+        text = page.read_text()
+        headings = {_slug(heading) for heading in _HEADING.findall(text)}
+        for anchor in _CONTENTS_ENTRY.findall(text):
+            assert _slug(anchor) in headings, (
+                f"{page.name} lists #{anchor} in its contents with no such heading"
+            )
+
+
 def test_readme_status_names_the_current_version() -> None:
     # The Status section states the version in prose; a bump that leaves it
     # behind is how a README starts describing a release that no longer

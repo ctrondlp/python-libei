@@ -3,7 +3,7 @@
 All D-Bus calls are faked, for the same reason test_portal.py's
 RemoteDesktopSession tests are: nothing here can click through a real
 consent dialog, and unlike RemoteDesktop, InputCapture additionally cannot
-be triggered at all without a human physically crossing a pointer barrier
+be triggered at all without a user physically crossing a pointer barrier
 -- there is no synthetic way to fire Activated for real, which is exactly
 why negotiate() and the barrier/activation methods are unit-tested here but
 have never been run against a live portal. See InputCaptureSession's own
@@ -391,7 +391,7 @@ def test_negotiate_without_pygobject_raises_portal_error() -> None:
 
 
 def test_an_interrupted_consent_dialog_closes_the_portal_session() -> None:
-    # Start blocks on a human answering the dialog; Ctrl-C during that wait
+    # Start blocks on a user answering the dialog; Ctrl-C during that wait
     # is a routine way out, and it strands an approved session exactly like
     # a decline does unless this closes it on the way out too.
     class RaisingConnection(FakeInputCaptureConnection):
