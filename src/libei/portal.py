@@ -107,7 +107,7 @@ _MIN_REMOTE_DESKTOP_VERSION = 2  # ConnectToEIS needs v2+
 _MIN_INPUT_CAPTURE_VERSION = 2  # CreateSession2 is a v2-only method
 
 _DEFAULT_TIMEOUT = 60.0
-"""Seconds to wait for one portal round trip. Generous, because a human has
+"""Seconds to wait for one portal round trip. Generous, because a user has
 to see and answer the consent dialog `Start` raises -- but bounded, because
 the alternative is a caller wedged forever if the portal dies after
 accepting the call and before sending its `Response`."""
@@ -159,7 +159,7 @@ class PortalTimeoutError(PortalError):
 
     Distinct from a decline: the portal accepted the call and then never
     sent its ``Response`` signal. Most often the consent dialog is simply
-    still waiting for a human, so raise the timeout rather than treating
+    still waiting for a user, so raise the timeout rather than treating
     this as a failure if that is expected.
     """
 
@@ -834,7 +834,7 @@ class RemoteDesktopSession:
                 timeout=timeout,
             )
         except BaseException:
-            # BaseException, not Exception: `Start` blocks on a human
+            # BaseException, not Exception: `Start` blocks on a user
             # answering a consent dialog, so Ctrl-C during that wait is a
             # routine way out of this function -- and it strands an
             # approved session exactly as a decline does.
@@ -1006,7 +1006,7 @@ def _wait_for_signal(
     before this is even called (a long-enabled session, subscribed to
     late) or not for a long time. ``timeout=None`` waits indefinitely --
     the read a caller wants when there is nothing else useful to do but
-    wait for a human to move the pointer.
+    wait for a user to move the pointer.
 
     **These signals are emitted on the portal object, not on the session
     object.** Subscribing with the session handle as the D-Bus object path
@@ -1165,10 +1165,10 @@ class InputCaptureSession:
 
     **Never live-tested.** Every other class in this module that talks to a
     real portal carries a hand-verification note in its own docstring; this
-    one does not, because verifying it means a human clicking through the
-    consent dialog *and* accepting that their pointer will be diverted away
-    from their own desktop for the length of the test -- not something to
-    trigger without asking first, unlike everything else here. Designed
+    one does not, because verifying it means a developer clicking through
+    the consent dialog *and* accepting that their pointer will be diverted
+    away from their own desktop for the length of the test -- not something
+    to trigger without asking first, unlike everything else here. Designed
     against ``/usr/share/dbus-1/interfaces/org.freedesktop.portal.
     InputCapture.xml`` (the shipped portal spec, not the header alone) and
     unit-tested against a fake connection reproducing that spec's documented
@@ -1406,7 +1406,7 @@ class InputCaptureSession:
         """Block until the compositor activates capture, or ``timeout``.
 
         Only returns once a real barrier crossing has been reported --
-        which, on hardware, means a human moved a physical pointer across
+        which, on hardware, means a user moved a physical pointer across
         one. There is no way to trigger this synthetically (see the class
         docstring's third paragraph), so this call can legitimately hang
         until someone does that, and `timeout=None` -- the default -- waits
@@ -1668,7 +1668,7 @@ class InputCaptureSession:
                 timeout,
             )
         except BaseException:
-            # BaseException, not Exception: Start blocks on a human
+            # BaseException, not Exception: Start blocks on a user
             # answering a consent dialog, so Ctrl-C during that wait is a
             # routine way out of this function -- and it strands an
             # approved session exactly as a decline does.

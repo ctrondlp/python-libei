@@ -5,7 +5,19 @@ All notable changes to python-libei are recorded here. The format follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html) — with the usual
 0.x caveat that the API may still change between minor versions.
 
-## [Unreleased]
+## [0.5.2] - 2026-09-12
+
+### Added
+
+- **`docs/install.md`**, a page for the half `pip` cannot do: the native
+  `libei`/`libeis`/`liboeffis` libraries, which distribution provides them
+  under which name, and the optional `[portal]` extra. The same information
+  was spread across two README sections, and `troubleshooting.md` carried a
+  Fedora-only `dnf` line with nothing to say for anyone else. Package names
+  are listed only for the families they have actually been checked against —
+  Fedora, Debian/Ubuntu (both exercised by this repo's own CI) and FreeBSD —
+  with the rest pointed at the name to search for rather than a guess, which
+  is the standard `hints.py` in pyguitest holds itself to as well.
 
 ### Changed
 
@@ -19,6 +31,12 @@ All notable changes to python-libei are recorded here. The format follows
   `ei.py`/`eis.py` naming the numbering scheme a field uses (e.g.
   `KeyEvent.key` is a Linux `KEY_*` code, matching `Device.keyboard_key()`)
   since that wasn't stated on the class itself.
+
+- **CI now runs `ruff format --check`**, which this repo had never asked for,
+  though pyguitest and pyguitest-recorder both gate on it. The tree was
+  already formatted, so this is a guard rather than a cleanup — and it is the
+  one repo of the three where formatting could previously have drifted in
+  unnoticed.
 
 ### Fixed
 
@@ -116,10 +134,10 @@ All notable changes to python-libei are recorded here. The format follows
 
   **Never run against a real portal**, unlike every other class in this
   module -- see the class's own docstring for why: verifying it needs a
-  human to click through the consent dialog *and* accept that their pointer
-  will be exclusively diverted from their own desktop for the length of the
-  test, not something to trigger without asking first. Designed against the
-  shipped portal spec
+  developer to click through the consent dialog *and* accept that their
+  pointer will be exclusively diverted from their own desktop for the
+  length of the test, not something to trigger without asking first.
+  Designed against the shipped portal spec
   (`/usr/share/dbus-1/interfaces/org.freedesktop.portal.InputCapture.xml`),
   not just the header, and unit-tested against a fake connection
   reproducing that spec's documented shapes -- see `tests/
@@ -217,7 +235,7 @@ All notable changes to python-libei are recorded here. The format follows
   the session with it — so a process that retried after a declined,
   timed-out or interrupted consent dialog accumulated live sessions inside
   xdg-desktop-portal. `negotiate()` now closes the session on the way out,
-  including on `KeyboardInterrupt`: `Start` blocks on a human answering a
+  including on `KeyboardInterrupt`: `Start` blocks on a user answering a
   dialog, so Ctrl-C during that wait is a routine exit and strands an
   approved session exactly as a decline does.
 

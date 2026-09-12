@@ -64,7 +64,7 @@ Three differences from `Oeffis` worth knowing:
   `GLib.MainLoop` per D-Bus round trip and returns only once connected, or
   raises `PortalVersionError` / `PortalDeniedError` / `PortalTimeoutError`.
 - **Bounded.** Each round trip gets `timeout` seconds (60 by default —
-  generous, since `Start` waits on a human answering a dialog). Without it a
+  generous, since `Start` waits on a user answering a dialog). Without it a
   portal that dies after accepting the call would wedge the calling thread
   forever, which is the one thing `Oeffis`'s pollable fd protects against.
 - **Close it.** The portal session lives in xdg-desktop-portal and outlives

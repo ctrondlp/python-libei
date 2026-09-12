@@ -119,7 +119,7 @@ and why, is in
 
 ## Status
 
-Beta (`0.5.1`), published on [PyPI](https://pypi.org/project/python-libei/)
+Beta (`0.5.2`), published on [PyPI](https://pypi.org/project/python-libei/)
 since `0.1.0`, and **the API is not frozen** — expect renames before 1.0.
 
 The injection path is exercised end to end against the real libraries by the
@@ -150,11 +150,11 @@ Exactly what was run, when, and against which versions:
   portal paths are the part likeliest to come up short off Linux, since
   they need an xdg-desktop-portal RemoteDesktop backend to talk to.
 - CPython 3.10 or newer (tested on 3.13)
-- The native libraries: on Fedora, `sudo dnf install libei libeis liboeffis`;
-  on FreeBSD, `pkg install libei` (the `x11/libei` port), which supplies all
-  three sonames including `liboeffis`
-- `libei.portal` only: PyGObject (`pip install 'python-libei[portal]'`), plus
-  whatever GObject-introspection libraries your distro needs for `Gio` --
+- The native `libei`, `libeis` and `liboeffis` libraries, which `pip` cannot
+  supply. Which package provides them on your distribution — and what to do
+  when the name does not match — is in [docs/install.md](docs/install.md).
+- `libei.portal` only: PyGObject, via the `portal` extra, plus whatever
+  GObject-introspection libraries your distribution needs for `Gio`, since
   PyPI's PyGObject wheel supplies the Python side only. Not needed for
   `libei.ei`, `libei.eis` or `libei.oeffis`.
 - libei 1.0.0 or newer for the core: connecting, binding a seat, and
@@ -187,22 +187,11 @@ Exactly what was run, when, and against which versions:
 
 ## Install
 
-From [PyPI](https://pypi.org/project/python-libei/):
-
 ```sh
 pip install python-libei
 ```
 
-The distribution is named `python-libei`, the import is `libei` -- so
-`pip show python-libei`, but `from libei import ei`.
-
-Pure Python, no build step: the wheel is `py3-none-any` and ctypes talks to
-the native libraries directly, so there is no compiler, no headers and no
-`libei-devel` involved at install time. What `pip` does *not* bring is the
-native libraries themselves -- see [Requirements](#requirements) above; on
-Fedora, `sudo dnf install libei libeis liboeffis`.
-
-To track `main` instead, or to hack on it, install from a checkout:
+From a checkout instead, to track `main` or to work on the package:
 
 ```sh
 git clone https://github.com/ctrondlp/python-libei.git
@@ -210,15 +199,11 @@ cd python-libei
 pip install .          # or `pip install -e '.[dev]'` to develop
 ```
 
-Importing is always safe, even where the native libraries are missing — they
-are loaded on first use, not at import. Check before you rely on them:
-
-```python
-from libei import ei
-
-if not ei.is_available():
-    ...  # fall back to another input backend
-```
+That is the half `pip` can do. The native `libei`/`libeis`/`liboeffis`
+libraries it cannot supply, the `portal` extra, and how to check what actually
+loaded are all in [docs/install.md](docs/install.md) — see
+[Requirements](#requirements) above for the version floors. Importing is safe
+without any of it: those libraries are loaded on first *use*, not at import.
 
 ## Concepts
 

@@ -10,11 +10,9 @@ pip install python-libei
 
 Pure Python, no build step — ctypes talks to the native libraries directly, so
 there is no compiler and no `libei-devel` involved. What `pip` does *not*
-bring is the native libraries themselves:
-
-```sh
-sudo dnf install libei libeis liboeffis     # Fedora
-```
+bring is the native libraries themselves; on Fedora that is `sudo dnf install
+libei libeis liboeffis`, and the name for every other distribution is in
+[install.md](install.md).
 
 The distribution is named `python-libei`, the import is `libei` — so
 `pip show python-libei`, but `from libei import ei`.

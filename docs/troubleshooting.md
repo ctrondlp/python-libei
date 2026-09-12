@@ -71,8 +71,9 @@ Work down it in order. The first three account for most cases.
 ## `LibraryNotFoundError`
 
 The native library is not installed, or is too old to export a function this
-package binds. Check with `ei.is_available()`; install with
-`sudo dnf install libei libeis liboeffis` on Fedora.
+package binds. Check with `ei.is_available()`; the package name for your
+distribution, and what to do when it does not match, is in
+[install.md](install.md).
 
 Because loading is lazy, this is raised at the first *call*, not at import —
 so an application can import this package, discover the libraries are absent,
