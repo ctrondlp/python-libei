@@ -25,12 +25,18 @@ class LazyLibrary:
     """A ctypes.CDLL that only opens the library on first real use."""
 
     def __init__(self, soname: str) -> None:
+        """Remember the soname; nothing is opened until first use."""
         self._soname = soname
         self._lib: ctypes.CDLL | None = None
         self._load_error: OSError | None = None
         self._lock = threading.Lock()
 
     def _ensure_loaded(self) -> ctypes.CDLL:
+        """Return the opened library, opening it on first call.
+
+        Raises LibraryNotFoundError on every later call too after a failure:
+        the failed load is cached rather than retried.
+        """
         # Double-checked: the unlocked read is the fast path taken by every
         # call after the first, and the repeated check inside the lock is
         # what makes it safe -- two threads can both fall through the first
@@ -91,6 +97,7 @@ class LazyLibrary:
         cache: dict[str, Any] = {}
 
         def call(*args: Any) -> Any:
+            """Resolve the C function on first call, then pass straight through."""
             # Resolution happens here, on first call, not at bind time --
             # that is the whole point of this module (see its docstring).
             bound = cache.get("f")

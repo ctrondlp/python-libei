@@ -66,6 +66,7 @@ class CObject:
     _instances_lock: ClassVar[threading.RLock]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Give each wrapper hierarchy one identity cache, shared by subclasses."""
         super().__init_subclass__(**kwargs)
         # One cache per wrapper *hierarchy*, not per class. Only a root
         # wrapper class -- one whose only CObject ancestor is CObject
@@ -98,6 +99,7 @@ class CObject:
             cls._instances_lock = threading.RLock()
 
     def __init__(self, pointer: int, *, _adopt: bool = False) -> None:
+        """Take a reference on a non-NULL pointer and cache this wrapper for it."""
         if not pointer:
             raise ValueError(f"{type(self).__name__} cannot wrap a NULL pointer")
         self._pointer = pointer
@@ -121,6 +123,7 @@ class CObject:
 
     @property
     def _as_parameter_(self) -> int:
+        """The raw pointer ctypes passes to C -- an error once it is released."""
         if self._pointer == 0:
             raise RuntimeError(
                 f"{type(self).__name__} has already been released; "
@@ -159,6 +162,7 @@ class CObject:
 
     @classmethod
     def _get_or_create(cls: type[T], pointer: int | None, *, adopt: bool) -> T | None:
+        """The wrapper already caching this pointer, or a new one; None for NULL."""
         if not pointer:
             return None
         if not cls._wrappable:
@@ -232,6 +236,7 @@ class CObject:
         return cls._get_or_create(pointer, adopt=True)
 
     def __eq__(self, other: object) -> bool:
+        """Equal when the types match and the wrapped pointers are the same."""
         if not isinstance(other, CObject):
             return NotImplemented
         if type(self) is not type(other):
@@ -245,6 +250,7 @@ class CObject:
         return self._pointer == other._pointer
 
     def __hash__(self) -> int:
+        """Stable for the object's life: the original pointer, not the live one."""
         # Deliberately keyed on _hash_key, not _pointer: release() zeroes
         # _pointer, and an object whose hash changes mid-life vanishes
         # from any set or dict it was placed in. Two wrappers can share a

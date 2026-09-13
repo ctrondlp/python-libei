@@ -159,6 +159,8 @@ class Flag(enum.IntEnum):
 
 
 class _LogPriority(enum.IntEnum):
+    """The log levels, as the integers libeis passes to its log handler."""
+
     DEBUG = 10
     INFO = 20
     WARNING = 30
@@ -456,6 +458,7 @@ class Device(CObject):
     _unref_func = staticmethod(_capi.libeis.device_unref)
 
     def __repr__(self) -> str:
+        """Name, device type and capabilities -- what tells two devices apart."""
         caps = "|".join(c.name or str(c.value) for c in self.capabilities)
         return f"<Device {self.name!r} {self.device_type.name} {caps}>"
 
@@ -709,6 +712,7 @@ class Seat(CObject):
     _unref_func = staticmethod(_capi.libeis.seat_unref)
 
     def __repr__(self) -> str:
+        """The seat's name and capabilities."""
         caps = "|".join(c.name or str(c.value) for c in self.capabilities)
         return f"<Seat {self.name!r} {caps}>"
 
@@ -770,6 +774,7 @@ class Client(CObject):
     _unref_func = staticmethod(_capi.libeis.client_unref)
 
     def __repr__(self) -> str:
+        """The client's name and which side of the protocol it is on."""
         return f"<Client {self.name!r} sender={self.is_sender}>"
 
     @property
@@ -840,6 +845,7 @@ class Ping(CObject):
     _unref_func = staticmethod(_capi.libeis.ping_unref)
 
     def __repr__(self) -> str:
+        """The ping's id, which is all a ping carries."""
         return f"<Ping {self.id}>"
 
     @property
@@ -867,6 +873,7 @@ class Event(CObject):
     _unref_func = staticmethod(_capi.libeis.event_unref)
 
     def __repr__(self) -> str:
+        """The event type by name, or the raw value for one we do not model."""
         event_type = self.event_type
         label = event_type.name if isinstance(event_type, EventType) else event_type
         return f"<Event {label}>"
@@ -1079,6 +1086,11 @@ class Event(CObject):
 
 
 def _log_callback(_eis: int, priority: int, message: bytes, _context: int) -> None:
+    """Forward libeis's log lines into the logging module.
+
+    The same constraint as ei.py's callback of that name: it runs inside a
+    ctypes callback, so it falls back rather than raising.
+    """
     # See ei.py's _log_callback: look up the raw int, not
     # _LogPriority(priority), which would raise ValueError before .get()'s
     # default could apply -- silently, since this runs inside a ctypes
@@ -1208,6 +1220,7 @@ class Eis(CObject):
 
     @classmethod
     def _new(cls) -> int:
+        """A new server from the C library, or an error if it returned NULL."""
         pointer = _capi.libeis.new(c_void_p(None))
         if not pointer:
             raise Error("eis_new() returned NULL")
