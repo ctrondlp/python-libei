@@ -122,6 +122,11 @@ class Oeffis:
         self._state = _EventType.NONE
 
     def __del__(self) -> None:
+        """Release the session, closing the EIS fd if nobody claimed it.
+
+        Safe on a half-built object: __init__ can raise before every
+        attribute exists, and this still runs.
+        """
         # getattr() with defaults rather than plain attribute access:
         # __init__ raises DisconnectedError when oeffis_new() returns NULL,
         # and Python still calls __del__ on the half-built object, where

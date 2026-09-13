@@ -67,6 +67,7 @@ _emulating_sequence = itertools.count(1)
 
 
 def _next_emulating_sequence() -> int:
+    """The next emulating-event sequence number: 32-bit, and never 0."""
     # Masked into uint32 to match the C parameter. libei asks callers to
     # keep wraparound detection "reasonable"; skipping 0 keeps the value
     # away from anything that might read as unset.
@@ -192,6 +193,8 @@ class KeymapType(enum.IntEnum):
 
 
 class _LogPriority(enum.IntEnum):
+    """The log levels, as the integers the C library passes to its handler."""
+
     DEBUG = 10
     INFO = 20
     WARNING = 30
@@ -329,6 +332,7 @@ class Region(CObject):
     _unref_func = staticmethod(_capi.libei.region_unref)
 
     def __repr__(self) -> str:
+        """The size and position, as WxH+X+Y."""
         w, h = self.dimension
         x, y = self.position
         return f"<Region {w}x{h}+{x}+{y}>"
@@ -510,6 +514,7 @@ class Device(CObject):
     _unref_func = staticmethod(_capi.libei.device_unref)
 
     def __repr__(self) -> str:
+        """Name, device type and capabilities -- what tells two devices apart."""
         caps = "|".join(c.name or str(c.value) for c in self.capabilities)
         return f"<Device {self.name!r} {self.device_type.name} {caps}>"
 
@@ -692,6 +697,7 @@ class Seat(CObject):
     _unref_func = staticmethod(_capi.libei.seat_unref)
 
     def __repr__(self) -> str:
+        """The seat's name and capabilities."""
         caps = "|".join(c.name or str(c.value) for c in self.capabilities)
         return f"<Seat {self.name!r} {caps}>"
 
@@ -774,6 +780,7 @@ class Ping(CObject):
     _unref_func = staticmethod(_capi.libei.ping_unref)
 
     def __repr__(self) -> str:
+        """The ping's id, which is all a ping carries."""
         return f"<Ping {self.id}>"
 
     @property
@@ -801,6 +808,7 @@ class Event(CObject):
     _unref_func = staticmethod(_capi.libei.event_unref)
 
     def __repr__(self) -> str:
+        """The event type by name, or the raw value for one we do not model."""
         event_type = self.event_type
         label = event_type.name if isinstance(event_type, EventType) else event_type
         return f"<Event {label}>"
@@ -1008,6 +1016,11 @@ class Event(CObject):
 
 
 def _log_callback(_ei: int, priority: int, message: bytes, _context: int) -> None:
+    """Forward libei's log lines into the logging module.
+
+    Runs inside a ctypes callback, where an exception is printed to stderr
+    and then dropped, so every lookup below falls back rather than raising.
+    """
     # Look up the raw int, not _LogPriority(priority): constructing the
     # enum from an unrecognized value raises ValueError immediately, which
     # would happen *before* .get()'s default ever gets a chance to apply
@@ -1227,6 +1240,7 @@ class Sender(Context):
 
     @classmethod
     def _new(cls) -> int:
+        """A new sender from the C library, or an error if it returned NULL."""
         pointer = _capi.libei.new_sender(c_void_p(None))
         if not pointer:
             raise Error("ei_new_sender() returned NULL")
@@ -1250,6 +1264,7 @@ class Receiver(Context):
 
     @classmethod
     def _new(cls) -> int:
+        """A new receiver from the C library, or an error if it returned NULL."""
         pointer = _capi.libei.new_receiver(c_void_p(None))
         if not pointer:
             raise Error("ei_new_receiver() returned NULL")

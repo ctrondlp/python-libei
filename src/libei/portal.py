@@ -427,18 +427,21 @@ def _request(
         params: Any,
         *_a: Any,
     ) -> None:
+        """Record the first reply and quit the loop; later replies are ignored."""
         if result:  # both subscriptions may fire; the first reply wins
             return
         result["code"], result["results"] = params.unpack()
         loop.quit()
 
     def on_timeout() -> bool:
+        """Stop the loop and record that it timed out rather than finished."""
         nonlocal timed_out
         timed_out = True
         loop.quit()
         return False  # one-shot; GLib removes the source when this is False
 
     def subscribe(path: str) -> None:
+        """Subscribe to Response on one path, keeping the handle alive."""
         subscriptions.append(
             connection.signal_subscribe(
                 busname,
@@ -685,12 +688,20 @@ class RemoteDesktopSession:
             self._connection = None
 
     def __enter__(self) -> RemoteDesktopSession:
+        """Return self: entering performs no action of its own."""
         return self
 
     def __exit__(self, *_exc: Any) -> None:
+        """Close the session on the way out, whatever happened."""
         self.close()
 
     def __del__(self) -> None:
+        """Close the fd only: __del__ can run during interpreter shutdown.
+
+        A synchronous D-Bus round trip there may hang or fail with nothing
+        left able to report it, so the D-Bus half of close() is deliberately
+        not attempted.
+        """
         # Deliberately only the fd, not the D-Bus half of close(): __del__
         # can run during interpreter shutdown, where a synchronous D-Bus
         # round trip may hang or fail in ways nothing can report. Closing an
@@ -1037,6 +1048,7 @@ def _wait_for_signal(
         params: Any,
         *_a: Any,
     ) -> None:
+        """Record the first matching signal; anything else is logged and dropped."""
         if result:  # a subscription that outlives its own wait can fire twice
             return
         args = params.unpack()
@@ -1058,6 +1070,7 @@ def _wait_for_signal(
         loop.quit()
 
     def on_timeout() -> bool:
+        """Stop the loop and record that it timed out rather than finished."""
         nonlocal timed_out
         timed_out = True
         loop.quit()
@@ -1487,12 +1500,15 @@ class InputCaptureSession:
             self._connection = None
 
     def __enter__(self) -> InputCaptureSession:
+        """Return self: entering performs no action of its own."""
         return self
 
     def __exit__(self, *_exc: Any) -> None:
+        """Close the session on the way out, whatever happened."""
         self.close()
 
     def __del__(self) -> None:
+        """Close the fd only, for the reason RemoteDesktopSession.__del__ gives."""
         # See RemoteDesktopSession.__del__ for why this closes only the fd.
         if getattr(self, "_eis_fd_claimed", True):
             return
