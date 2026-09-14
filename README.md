@@ -1,5 +1,9 @@
 # python-libei
 
+[![CI](https://github.com/ctrondlp/python-libei/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ctrondlp/python-libei/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/python-libei)](https://pypi.org/project/python-libei/)
+[![License](https://img.shields.io/pypi/l/python-libei)](https://github.com/ctrondlp/python-libei/blob/main/LICENSE)
+
 Python bindings for [libei, libeis and liboeffis](https://libinput.pages.freedesktop.org/libei/) —
 the Wayland input-emulation libraries. Use this to **move the pointer, click,
 type, or scroll on a Wayland desktop** from Python, the way `xdotool` did on
