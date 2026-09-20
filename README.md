@@ -70,11 +70,14 @@ to get permission, then `ei` to inject.
 | **Get permission**, and not be asked again | `libei.portal` | Same handshake over D-Bus directly, with `persist_mode` / `restore_token`. Needs PyGObject |
 | **Be the server**, for tests or a compositor | `libei.eis` | Drives your client code with no real compositor and no consent dialog |
 
-Each module has `is_available()`, an `Error` exception, and an `EventType` /
-`DeviceCapability` enum. `ei` and `eis` also share the shapes around them:
-`Device`, `Seat`, `Region`, `Keymap`, `Touch`, `Ping`, `Event`, and the frozen
-dataclasses its accessors return. The package ships `py.typed`, so callers
-type-check against real annotations rather than `Any`.
+Each module has `is_available()`. `ei` and `eis` share the shapes around them:
+an `Error` exception, an `EventType` and `DeviceCapability` enum, and `Device`,
+`Seat`, `Region`, `Keymap`, `Touch`, `Ping`, `Event` with the frozen dataclasses
+its accessors return. `oeffis` and `portal` are smaller — `DeviceType`, no
+`EventType` or `DeviceCapability`, and their own exception classes rather than
+an `Error`. [docs/troubleshooting.md](docs/troubleshooting.md) names every class
+they raise. The package ships `py.typed`, so callers type-check against real
+annotations rather than `Any`.
 
 ## What's implemented
 

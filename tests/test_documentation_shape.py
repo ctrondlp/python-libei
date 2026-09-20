@@ -9,6 +9,7 @@ that documentation defects still get caught in that environment.
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 import textwrap
 from pathlib import Path
@@ -19,6 +20,13 @@ from libei import ei, eis
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _README = _PROJECT_ROOT / "README.md"
+_TROUBLESHOOTING = _PROJECT_ROOT / "docs" / "troubleshooting.md"
+
+# The modules a reader can import a public name from -- what the reference
+# pages name, and whose docstrings carry the examples worth checking.
+_PUBLIC_MODULES = ("libei.ei", "libei.eis", "libei.oeffis", "libei.portal")
+
+_EXCEPTION_HEADING = "## When it does raise: which name you are catching"
 
 
 def _readme_python_blocks() -> list[str]:
@@ -50,14 +58,22 @@ def test_readme_examples_are_valid_python() -> None:
             pytest.fail(f"README example is not valid Python ({exc}):\n{block}")
 
 
-@pytest.mark.parametrize("module", [ei, eis])
-def test_module_docstring_examples_are_valid_python(module: object) -> None:
+@pytest.mark.parametrize("module_name", _PUBLIC_MODULES)
+def test_module_docstring_examples_are_valid_python(module_name: str) -> None:
+    # Every module with an example has to write it as the ``::`` literal
+    # block the extractor reads, and the block has to parse. oeffis and
+    # portal wrote theirs as a plain indented block, so neither example was
+    # ever extracted here -- or evaluated as reST, where a literal block
+    # needs the marker.
+    module = importlib.import_module(module_name)
     source = _docstring_example(module.__doc__ or "")
-    assert source.strip(), f"{module.__name__} docstring has no example"  # type: ignore[attr-defined]
+    assert source.strip(), f"{module_name} docstring has no ``::`` example"
     try:
-        compile(source, f"<{module.__name__} docstring>", "exec")  # type: ignore[attr-defined]
+        compile(source, f"<{module_name} docstring>", "exec")
     except SyntaxError as exc:
-        pytest.fail(f"docstring example is not valid Python ({exc}):\n{source}")
+        pytest.fail(
+            f"{module_name} docstring example is not valid Python ({exc}):\n{source}"
+        )
 
 
 def _emulating_examples() -> list[str]:
@@ -314,12 +330,124 @@ def test_each_pages_own_contents_resolves() -> None:
             )
 
 
-def test_readme_status_names_the_current_version() -> None:
-    # The Status section states the version in prose; a bump that leaves it
-    # behind is how a README starts describing a release that no longer
-    # exists.
+@pytest.mark.parametrize("page", ["README.md", "docs/developers/verification.md"])
+def test_status_pages_name_the_current_version(page: str) -> None:
+    # Both state the version in prose, and nothing keeps them in step with
+    # pyproject.toml -- so a bump that touches one and not the other ships a
+    # page describing a release that no longer exists. The developers page
+    # sat a whole release behind exactly that way: 0.5.1 while
+    # pyproject.toml, libei.__version__ and the README all said 0.5.2.
     import libei
 
-    assert f"`{libei.__version__}`" in _README.read_text(), (
-        f"README does not mention the current version {libei.__version__}"
+    assert f"`{libei.__version__}`" in (_PROJECT_ROOT / page).read_text(), (
+        f"{page} does not mention the current version {libei.__version__}"
     )
+
+
+def _documented_exceptions() -> list[tuple[list[str], list[str]]]:
+    """The (modules, classes) of each row of the exception table.
+
+    Only the table under :data:`_EXCEPTION_HEADING` is read, so a table
+    added to that page elsewhere cannot quietly become part of this check.
+    """
+    _, _, after = _TROUBLESHOOTING.read_text().partition(_EXCEPTION_HEADING)
+    section = after.split("\n## ", 1)[0]
+    rows: list[tuple[list[str], list[str]]] = []
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 2 or cells[0] in ("Module", "") or cells[0].strip("- ") == "":
+            continue
+        rows.append(
+            (
+                [name.strip(" `") for name in cells[0].split(",")],
+                [name.strip(" `") for name in cells[1].split(",")],
+            )
+        )
+    return rows
+
+
+def test_documented_exceptions_are_part_of_the_public_api() -> None:
+    # The page says which module to import each exception from, so each has
+    # to be part of that module's declared surface rather than an attribute
+    # it happens to carry. LibraryNotFoundError was importable from
+    # libei.ei and libei.eis but listed in neither __all__ -- which left the
+    # private libei._capi.loader as the only place it was obviously public.
+    rows = _documented_exceptions()
+    assert rows, "no exception table found in docs/troubleshooting.md"
+    for modules, classes in rows:
+        for class_name in classes:
+            found: dict[str, object] = {}
+            for module_name in modules:
+                module = importlib.import_module(module_name)
+                assert hasattr(module, class_name), f"{module_name} has no {class_name}"
+                assert class_name in module.__all__, (
+                    f"{module_name}.{class_name} is documented as importable from "
+                    "there, but is missing from that module's __all__"
+                )
+                found[module_name] = getattr(module, class_name)
+            # A row may name two modules for one class, and Error is a
+            # separate class on each side -- so a shared row is the only
+            # thing that has to resolve to one object.
+            assert len({id(cls) for cls in found.values()}) == 1, (
+                f"the row for {class_name} names {modules}, which do not agree "
+                "on what that class is"
+            )
+
+
+@pytest.mark.parametrize("module_name", _PUBLIC_MODULES)
+def test_public_api_is_documented(module_name: str) -> None:
+    # The package ships py.typed and is meant to be consumed as a
+    # dependency, so every public callable needs at least a one-line
+    # docstring. This started at 3/64 and 6/74. It reads source text and
+    # needs nothing installed, so it belongs here rather than in
+    # test_documented_examples.py, whose module-level `integration` mark
+    # skipped it on exactly the machines where it was cheapest to run.
+    module = importlib.import_module(module_name)
+    source_path = module.__file__
+    assert source_path is not None, f"{module_name} has no source file to read"
+    tree = ast.parse(Path(source_path).read_text())
+    undocumented = [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not node.name.startswith("_")
+        and not ast.get_docstring(node)
+    ]
+    assert not undocumented, (
+        f"{module_name} has undocumented public definitions: "
+        f"{sorted(set(undocumented))}"
+    )
+
+
+# A role whose name starts on the next line renders as literal text wherever
+# the docstring is read, and so does everything after an unpaired backtick.
+_SPLIT_ROLE = re.compile(r":(class|meth|attr|func|mod|data|exc):`[^`\n]*\n")
+
+
+def _docstrings(module_name: str) -> list[tuple[str, str]]:
+    """The (where, docstring) of a module and every definition inside it."""
+    module = importlib.import_module(module_name)
+    source_path = module.__file__
+    assert source_path is not None, f"{module_name} has no source file to read"
+    tree = ast.parse(Path(source_path).read_text())
+    found = [("<module>", ast.get_docstring(tree) or "")]
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append((node.name, ast.get_docstring(node) or ""))
+    return found
+
+
+@pytest.mark.parametrize("module_name", _PUBLIC_MODULES)
+def test_docstrings_have_no_broken_markup(module_name: str) -> None:
+    # Neither defect shows up anywhere except in the rendered text: portal.py
+    # read ":meth:`enable` and :meth:`" and broke the line before
+    # "wait_for_activation`", so the second name never became a link, and a
+    # docstring with an unpaired backtick silently swallows the rest of it.
+    for where, doc in _docstrings(module_name):
+        if _SPLIT_ROLE.search(doc) is not None:
+            pytest.fail(f"{module_name}:{where} breaks a role across a line break")
+        assert doc.count("`") % 2 == 0, (
+            f"{module_name}:{where} has an unpaired backtick"
+        )

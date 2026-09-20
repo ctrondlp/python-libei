@@ -489,6 +489,20 @@ def test_explicit_all_devices_is_translated_too() -> None:
     assert select[1][-1]["types"].value != 0
 
 
+def test_create_session_carries_a_session_handle_token() -> None:
+    # Omitting it crashes xdg-desktop-portal 1.22.1 outright -- SIGABRT,
+    # "assertion failed: (session->token != NULL)" -- and it is a *different*
+    # token from the handle_token _request() injects on its own, so a
+    # CreateSession that carries one and not the other still looks right.
+    connection = FakeConnection()
+    with install_fake_gi(connection):
+        portal.RemoteDesktopSession.negotiate(connection=connection)
+    create = next(c for c in connection.calls if c[0] == "CreateSession")
+    options = create[1][-1]
+    assert options["session_handle_token"].value
+    assert options["handle_token"].value
+
+
 def test_restore_token_without_persist_mode_is_refused() -> None:
     # The portal consumes a restore token on use and only mints a new one
     # when persistence was asked for, so this combination would spend the

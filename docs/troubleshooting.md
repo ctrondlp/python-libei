@@ -84,7 +84,7 @@ import each from the module that raises it.
 | `libei.portal` | `PortalVersionError` | The RemoteDesktop portal is too old to offer `ConnectToEIS` |
 | `libei.portal` | `PortalTimeoutError` | A step was accepted and never answered. Carries `.step` and `.timeout` |
 | `libei.portal` | `PortalDeniedError` | `CreateSession`, `SelectDevices` or `Start` came back non-zero — an explicit decline, or any other code the spec does not distinguish from one. Carries `.step` and `.message` |
-| `libei.ei`, `libei.eis` | `LibraryNotFoundError` | The native library is missing or too old to export the function being called. A `RuntimeError`, and raised at the first *call* — see below |
+| `libei.ei`, `libei.eis`, `libei.oeffis` | `LibraryNotFoundError` | The native library is missing or too old to export the function being called. A `RuntimeError`, and raised at the first *call* — see below |
 
 Which of those to catch depends on the families, because they do not nest under
 a single base:
@@ -116,9 +116,9 @@ a single base:
 ## `LibraryNotFoundError`
 
 The native library is not installed, or is too old to export a function this
-package binds. Check with `ei.is_available()`; the package name for your
-distribution, and what to do when it does not match, is in
-[install.md](install.md).
+package binds. Check with `ei.is_available()`, or `oeffis.is_available()` for
+a missing liboeffis; the package name for your distribution, and what to do
+when it does not match, is in [install.md](install.md).
 
 Because loading is lazy, this is raised at the first *call*, not at import —
 so an application can import this package, discover the libraries are absent,

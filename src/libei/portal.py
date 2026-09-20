@@ -21,7 +21,7 @@ should be handled by an application talking to DBus directly"
 (https://libinput.pages.freedesktop.org/libei/api/group__liboeffis.html).
 This module is that: the ``CreateSession`` -> ``SelectDevices`` -> ``Start``
 -> ``ConnectToEIS`` sequence driven directly, with ``persist_mode`` and
-``restore_token`` exposed as real parameters.
+``restore_token`` exposed as real parameters::
 
     with RemoteDesktopSession.negotiate(
         devices=DeviceType.POINTER | DeviceType.KEYBOARD,
@@ -1154,8 +1154,8 @@ class InputCaptureSession:
     direction: instead of injecting synthetic input, this receives real
     input from the user's own devices once the compositor decides to divert
     it here. That decision is the whole point of the protocol and is never
-    this session's to make -- see :meth:`enable` and :meth:`
-    wait_for_activation`.
+    this session's to make -- see :meth:`enable` and
+    :meth:`wait_for_activation`.
 
     **Capturing is exclusive.** Once the compositor activates a capture,
     the events it captures stop reaching the desktop entirely and are sent
