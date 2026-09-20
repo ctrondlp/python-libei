@@ -5,6 +5,37 @@ All notable changes to python-libei are recorded here. The format follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html) — with the usual
 0.x caveat that the API may still change between minor versions.
 
+## [Unreleased]
+
+### Added
+
+- **`docs/troubleshooting.md` now names the exceptions, having been the page
+  for everything that *doesn't* raise.** Eight classes are raised from real
+  paths and were named in no user-facing text: `ei.Error` and `eis.Error` (22
+  raise sites between them, two classes sharing no ancestor, carrying
+  `.errno` where libei reported one), `portal.PortalError` (18 sites,
+  the "session is closed" path among them) with its three subclasses, and
+  `oeffis.DisconnectedError`/`SessionClosedError` from a session that ends
+  under the caller. Only the three portal subclasses appeared anywhere, and
+  only inside one sentence of `recipes.md`; the two `Error` classes and both
+  oeffis ones appeared on no page at all — so the names a caller writes in an
+  `except` clause were exactly the names the docs did not carry. The new
+  section gives what each is raised for and what nests under what:
+  `except PortalError` covers its three, `except DisconnectedError` covers
+  `SessionClosedError`, and `ei.Error`/`eis.Error` cover nothing but
+  themselves.
+
+- **`docs/recipes.md` pairs every event type with the getter that reads it.**
+  The page listed twelve getters in a sentence and never said which event each
+  one belongs to — the pairing the `TypeError` beside them exists to enforce,
+  and the reason `keyboard_xkb_modifiers` reads oddly, being the only getter
+  not named after the class it unwraps. Two more were missing from the
+  sentence entirely: `pong`, which is used two paragraphs below it, and
+  `emulating_sequence`. All fourteen are now a table with the fields each
+  returns and the libei version where one is needed, followed by the
+  connection and lifecycle events, which have no getter and are read through
+  `event_type`.
+
 ## [0.5.2] - 2026-09-12
 
 ### Added
