@@ -231,13 +231,31 @@ for event in receiver.events:
         print(motion.dx, motion.dy)
 ```
 
-Each event type has its own getter — `key_event`, `button_event`,
-`pointer_event`, `pointer_absolute_event`, `scroll_event`,
-`scroll_discrete_event`, `scroll_stop_event`, `touch_event` and
-`touch_up_event`, `text_utf8_event`, `text_keysym_event` and
-`keyboard_xkb_modifiers` — and **each checks the event's type before reading**,
-raising `TypeError` rather than handing back the zero-filled result libei
-would give for a mismatch.
+Which getter goes with which event is fixed, and **each checks the event's
+type before reading**, raising `TypeError` rather than handing back the
+zero-filled result libei would give for a mismatch:
+
+| `event_type` | Getter | You get |
+| --- | --- | --- |
+| `KEYBOARD_KEY` | `key_event` | `KeyEvent(key, is_press)` — a Linux `KEY_*` code |
+| `KEYBOARD_MODIFIERS` | `keyboard_xkb_modifiers` | `XkbModifiersEvent(depressed, latched, locked, group)`, the only getter not named after the class it unwraps |
+| `BUTTON_BUTTON` | `button_event` | `ButtonEvent(button, is_press)` — a Linux `BTN_*` code |
+| `POINTER_MOTION` | `pointer_event` | `PointerEvent(dx, dy)` |
+| `POINTER_MOTION_ABSOLUTE` | `pointer_absolute_event` | `PointerAbsoluteEvent(x, y)`, in the emitting device's `Region` space |
+| `SCROLL_DELTA` | `scroll_event` | `ScrollEvent(dx, dy)` — smooth, in logical pixels |
+| `SCROLL_DISCRETE` | `scroll_discrete_event` | `ScrollDiscreteEvent(dx, dy)` — detents, 120 to each |
+| `SCROLL_STOP`, `SCROLL_CANCEL` | `scroll_stop_event` | `ScrollStopEvent(stop_x, stop_y)` |
+| `TOUCH_DOWN`, `TOUCH_MOTION` | `touch_event` | `TouchEvent(touchid, x, y)` |
+| `TOUCH_UP` | `touch_up_event` | `TouchUpEvent(touchid, is_cancel)` |
+| `TEXT_UTF8` | `text_utf8_event` | `TextUtf8Event(text)` — libei 1.6 |
+| `TEXT_KEYSYM` | `text_keysym_event` | `TextKeysymEvent(keysym, is_press)` — libei 1.6 |
+| `PONG` | `pong` | the `Ping` this answers — libei 1.4 |
+| `DEVICE_START_EMULATING` | `emulating_sequence` | the sequence number of that transaction |
+
+The lifecycle events — `CONNECT`, `DISCONNECT`, `SEAT_ADDED`, `SEAT_REMOVED`,
+`DEVICE_ADDED`, `DEVICE_REMOVED`, `DEVICE_PAUSED`, `DEVICE_RESUMED`, `SYNC`,
+`FRAME` and `DEVICE_STOP_EMULATING` — have no getter: read them through
+`event_type`, plus `event.device` or `event.seat` where they concern one.
 
 Event types this package has never heard of do not raise: `event_type` returns
 a plain `int`, because libei's own header says the enum "is not exhaustive".

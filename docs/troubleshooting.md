@@ -68,6 +68,51 @@ Work down it in order. The first three account for most cases.
     lines for one connect and one motion, and it is the right tool when a
     negotiation stalls rather than fails.
 
+## When it does raise: which name you are catching
+
+Everything above is about calls that fail without saying anything. This is the
+other half — the names to put in an `except` clause. None of them is exported
+from the package root (`libei/__init__.py` exports only `__version__`), so
+import each from the module that raises it.
+
+| Module | Class | Raised for |
+| --- | --- | --- |
+| `libei.ei` | `Error` | A native call failed: a constructor returned NULL, or `set_fd()`/`set_socket()` returned a negative errno. Carries `.message` and `.errno`, the latter `None` for a bare NULL |
+| `libei.eis` | `Error` | The same, on the server side. A separate class, not a subclass of the above |
+| `libei.oeffis` | `DisconnectedError` | The portal session ended under the caller — an error, or the request being denied. `.message` holds libei's own wording, and is `None` where it had none |
+| `libei.oeffis` | `SessionClosedError` | The portal closed the session deliberately. A `DisconnectedError` subclass, with the message fixed at `Session closed` |
+| `libei.portal` | `PortalVersionError` | The RemoteDesktop portal is too old to offer `ConnectToEIS` |
+| `libei.portal` | `PortalTimeoutError` | A step was accepted and never answered. Carries `.step` and `.timeout` |
+| `libei.portal` | `PortalDeniedError` | `CreateSession`, `SelectDevices` or `Start` came back non-zero — an explicit decline, or any other code the spec does not distinguish from one. Carries `.step` and `.message` |
+| `libei.ei`, `libei.eis` | `LibraryNotFoundError` | The native library is missing or too old to export the function being called. A `RuntimeError`, and raised at the first *call* — see below |
+
+Which of those to catch depends on the families, because they do not nest under
+a single base:
+
+- **`except PortalError`** covers `PortalVersionError`, `PortalTimeoutError`
+  and `PortalDeniedError`. `PortalTimeoutError` is the one to think about before
+  treating it as a failure: the call is still outstanding, and by far the most
+  common cause is a consent dialog a user has not answered yet.
+- **`except DisconnectedError`** covers `SessionClosedError` too. That one is
+  not an error in libei's view — the session ended normally — which is why it
+  has its own class rather than reusing its base.
+- **`ei.Error` and `eis.Error` have no common ancestor**, so "catch anything
+  libei raises" is a tuple, not one name:
+
+  ```python
+  from libei.ei import Error, LibraryNotFoundError
+  from libei.oeffis import DisconnectedError
+  from libei.portal import PortalError
+
+  try:
+      ...
+  except (Error, PortalError, DisconnectedError, LibraryNotFoundError):
+      ...
+  ```
+
+  A receiver, or a process implementing both sides, wants `libei.eis.Error` in
+  that tuple as well.
+
 ## `LibraryNotFoundError`
 
 The native library is not installed, or is too old to export a function this
