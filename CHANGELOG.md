@@ -9,6 +9,23 @@ All notable changes to python-libei are recorded here. The format follows
 
 ### Added
 
+- **`LibraryNotFoundError` is now part of `libei.ei`'s, `libei.eis`'s and
+  `libei.oeffis`'s public surface.** It has always been raised from all
+  three -- `_capi/loader.py` raises it the moment a `dlopen` fails, or an
+  installed library turns out too old to export a bound function -- and
+  `docs/troubleshooting.md` had been telling readers to write
+  `from libei.ei import Error, LibraryNotFoundError` since its exceptions
+  table went in. It was in no module's `__all__`, alone among the eight
+  classes that table names: catching `ei.LibraryNotFoundError` worked, but
+  `from libei.ei import *`, `pydoc`, an IDE's completion, and anything else
+  reading a module's declared surface did not see it, and the only
+  obviously public place to import it from was the private
+  `libei._capi.loader` it is defined in. Two of the three modules come from
+  the table; `libei.oeffis` was found while fixing those, `Oeffis.create()`
+  on a machine with no liboeffis being the same failure one module over.
+  Nothing moved to the package root either way: `libei/__init__.py` still
+  carries only `__version__`, as that page says.
+
 - **`docs/troubleshooting.md` now names the exceptions, having been the page
   for everything that *doesn't* raise.** Eight classes are raised from real
   paths and were named in no user-facing text: `ei.Error` and `eis.Error` (22
@@ -35,6 +52,78 @@ All notable changes to python-libei are recorded here. The format follows
   returns and the libei version where one is needed, followed by the
   connection and lifecycle events, which have no getter and are read through
   `event_type`.
+
+### Changed
+
+- **The docstring-completeness check now runs everywhere, and covers
+  `libei.portal`.** It lived in `tests/test_documented_examples.py`, whose
+  module-level `integration` mark skips the file where the native libraries
+  are absent -- so a check that reads source with `ast` and needs nothing
+  installed was skipping on exactly the machines where it was cheapest to
+  run. It now sits in `tests/test_documentation_shape.py`, beside the other
+  checks that need no native library, takes in classes as well as functions,
+  and includes `libei.portal`, which was never checked. Nothing had to be
+  written to make it pass: every public definition in all four modules
+  already carries a docstring, so this is a guard rather than a cleanup.
+
+- **A new check ties the exceptions table to the modules it names.**
+  `tests/test_documentation_shape.py` now reads the table in
+  `docs/troubleshooting.md` and asserts that every class it pairs with a
+  module is both reachable from that module and listed in its `__all__` --
+  and that a class shared between modules is one class in all of them, which
+  is what makes one `except` clause cover every module that raises it. This
+  is the check that would have caught `LibraryNotFoundError` when the table
+  itself was written.
+
+- **The documentation guards reach the files that were drifting.**
+  `tests/test_documentation_shape.py` compared the README's version line
+  against `libei.__version__` but not the developers page's, which is how
+  0.5.1 sat there through a release; both pages are compared now. The
+  module-docstring example check covered the two modules that used `::` and
+  read nothing at all from the two that did not -- both are covered now, all
+  four public modules. A new check reads every docstring in those modules
+  for the two defects below, neither of which is visible anywhere but in the
+  rendered text: a role split across a line break, and an unpaired backtick.
+  And `tests/test_portal.py` now asserts what `verification.md` claimed it
+  covered -- that `CreateSession` carries a `session_handle_token`, whose
+  absence crashes xdg-desktop-portal 1.22.1 outright.
+
+### Fixed
+
+- **`scripts/pre-commit-test.sh` failed its `tests` check on any interpreter
+  without the package installed.** The script runs `python -m pytest -q -rs`
+  with no `PYTHONPATH`, deliberately: CI's install step is one of the two
+  things it leaves to the runner. But `[tool.pytest.ini_options]` here had
+  only `testpaths`, so nothing put `src` on the path, and `tests/conftest.py`'s
+  `from libei import ei` died at collection -- reporting an ImportError for
+  the whole suite where pyguitest and pyguitest-recorder both set
+  `pythonpath = ["src"]` and just run. The other four checks passed, which is
+  what made it look like a test failure rather than a path one. Same setting
+  added here; a bare checkout now runs the suite with nothing installed, which
+  is also what makes a copied tree testable anywhere.
+
+- **Four documentation defects, each invisible from the page it is on.**
+  `docs/developers/verification.md` opened with "the package is beta
+  (`0.5.1`)" a release after 0.5.2 shipped, and nothing compared that prose
+  to `pyproject.toml` the way the README's own version line is compared. The
+  same page and `docs/vs-snegg.md` both pointed a reader at "the README's
+  Troubleshooting section", which has never existed -- the GNOME 44
+  explanation they mean is in `docs/troubleshooting.md`, and both links now
+  go there. And `InputCaptureSession`'s own docstring broke a role across a
+  line, so `:meth:`wait_for_activation`` rendered as the literal text
+  ":meth:" and a name rather than as a link. The README's module table also
+  promised that *each* module carries an `Error` exception and an
+  `EventType`/`DeviceCapability` enum, which holds for `ei` and `eis` only:
+  `oeffis` and `portal` raise their own classes and carry `DeviceType`
+  instead, so a reader writing `except oeffis.Error` was chasing a class
+  that does not exist. All four are corrected.
+
+- **The two module docstrings that carry a usage example now mark it as
+  one.** `oeffis` and `portal` wrote their examples as plain indented
+  blocks, where `ei` and `eis` use the `::` a reST literal block needs --
+  which is also why the example check had never read either of them, since
+  the extractor looks for that marker. The blocks themselves were already
+  valid Python and unaffected.
 
 ## [0.5.2] - 2026-09-12
 

@@ -90,30 +90,3 @@ def test_ei_module_docstring_example_runs() -> None:
         ei.Context.dispatch = original_dispatch  # type: ignore[method-assign]
 
     assert namespace["device"] is not None
-
-
-@pytest.mark.parametrize("module", [ei, eis, "oeffis"])
-def test_public_api_is_documented(module: object) -> None:
-    # The package ships py.typed and is meant to be consumed as a
-    # dependency, so every public callable needs at least a one-line
-    # docstring. This started at 3/64 and 6/74.
-    import ast
-    import importlib
-
-    if isinstance(module, str):
-        module = importlib.import_module(f"libei.{module}")
-
-    source = Path(module.__file__).read_text()  # type: ignore[attr-defined]
-    tree = ast.parse(source)
-
-    undocumented = [
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and not node.name.startswith("_")
-        and not ast.get_docstring(node)
-    ]
-    assert not undocumented, (
-        f"{module.__name__} has undocumented public callables: "  # type: ignore[attr-defined]
-        f"{sorted(set(undocumented))}"
-    )

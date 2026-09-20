@@ -73,6 +73,14 @@ libei = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The suite imports `libei` from the checkout rather than requiring an
+# install, so `scripts/pre-commit-test.sh` runs on an interpreter with only
+# the dev tools in it -- which is what that script's own header asks for, and
+# what pyguitest and pyguitest-recorder already do. CI installs the package,
+# so the installed path is still covered there. Without this, conftest's
+# `from libei import ei` fails at collection and the whole check reports an
+# ImportError instead of running anything.
+pythonpath = ["src"]
 markers = [
     "integration: requires the real libei/libeis/liboeffis shared libraries to be installed",
 ]

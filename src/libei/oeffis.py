@@ -6,7 +6,7 @@ Negotiates an EIS connection through the
 This is the path a sandboxed or otherwise non-privileged client uses to get
 an EI socket: it asks the portal, the user is shown a consent dialog, and on
 approval this hands back a file descriptor to pass to
-:meth:`libei.ei.Sender.create_for_fd`.
+:meth:`libei.ei.Sender.create_for_fd`::
 
     oeffis = Oeffis.create(devices=DeviceType.POINTER)
     while True:
@@ -41,6 +41,7 @@ import logging
 import os
 
 from . import _capi
+from ._capi.loader import LibraryNotFoundError
 
 logger = logging.getLogger("libei.oeffis")
 
@@ -242,6 +243,11 @@ class Oeffis:
 __all__ = [
     "DeviceType",
     "DisconnectedError",
+    # Imported rather than defined here: every call bound through
+    # _capi.liboeffis can raise it -- Oeffis.create() on a machine with no
+    # liboeffis is the ordinary one -- so a caller importing from this
+    # module catches it from here too. See docs/troubleshooting.md.
+    "LibraryNotFoundError",
     "Oeffis",
     "SessionClosedError",
     "is_available",

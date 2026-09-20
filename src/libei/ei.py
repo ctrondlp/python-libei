@@ -1295,6 +1295,10 @@ __all__ = [
     "KeyEvent",
     "Keymap",
     "KeymapType",
+    # Imported rather than defined here: every call bound through
+    # _capi.libei can raise it, so a caller importing from this module
+    # catches it from here too -- see docs/troubleshooting.md.
+    "LibraryNotFoundError",
     "Ping",
     "PointerAbsoluteEvent",
     "PointerEvent",

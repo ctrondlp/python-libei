@@ -99,10 +99,11 @@ project -- it needs an interactive consent dialog, which nothing here drives
 programmatically. It was manually verified working on 2026-08-25 on GNOME
 50.4 (`busctl monitor` trace: `CreateSession -> SelectDevices -> Start ->
 ConnectToEIS`, 3/3 attempts, a few seconds each), after an earlier attempt on
-GNOME 44 saw it hang. See the README's Troubleshooting section for the likely
-explanation. Manual verification isn't the same guarantee automated coverage
-would be, so treat `oeffis` as the least *automatically* verified part of
-this package -- see the note in `tests/test_oeffis.py`.
+GNOME 44 saw it hang. See
+[troubleshooting.md](troubleshooting.md#the-portal-dialog-appears-i-approve-it-and-nothing-happens)
+for the likely explanation. Manual verification isn't the same guarantee
+automated coverage would be, so treat `oeffis` as the least *automatically*
+verified part of this package -- see the note in `tests/test_oeffis.py`.
 
 ## Two things found while building the integration test
 

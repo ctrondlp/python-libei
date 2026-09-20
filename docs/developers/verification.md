@@ -1,6 +1,6 @@
 # What has actually been verified
 
-The package is beta (`0.5.1`) and the API is not frozen — expect renames
+The package is beta (`0.5.2`) and the API is not frozen — expect renames
 before 1.0. This page is what that qualifier covers, concretely: which paths
 have been driven against real libraries, which have only ever been driven
 against fakes, and which libei versions the whole thing has met.
@@ -27,8 +27,9 @@ a negotiation that fails part-way.
 
 By hand:
 
-- **`libei.oeffis`**, 2026-08-25. See the README's troubleshooting section for
-  what that run established about the GNOME 44 hangs.
+- **`libei.oeffis`**, 2026-08-25. See
+  [troubleshooting.md](../troubleshooting.md#the-portal-dialog-appears-i-approve-it-and-nothing-happens)
+  for what that run established about the GNOME 44 hangs.
 - **`libei.portal.RemoteDesktopSession`**, 2026-09-01, against a real GNOME
   Wayland session (`RemoteDesktop` v2). A first run raised the consent dialog
   and was approved (5.4s); a second replaying the `restore_token` was granted
