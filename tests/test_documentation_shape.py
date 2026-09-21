@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from libei import ei, eis
+from libei import ei, eis, oeffis, portal
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _README = _PROJECT_ROOT / "README.md"
@@ -311,8 +311,33 @@ def test_relative_links_point_at_something_that_exists() -> None:
             path = target.split("#", 1)[0]
             if not path:
                 continue
-            assert (page.parent / path).exists(), (
-                f"{page.name} links to {path}, which does not exist"
+            linked = page.parent / path
+            assert linked.exists(), f"{page.name} links to {path}, which does not exist"
+            if linked.is_dir():
+                # A directory is a page only where it has a README. Without one
+                # the link lands the reader on a file listing, which is what
+                # the README's own links to `docs/developers/` did until they
+                # named the two pages in it -- and `exists()` alone cannot tell
+                # the two apart.
+                assert (linked / "README.md").exists(), (
+                    f"{page.name} links to the directory {path}, which has no "
+                    "README to land on"
+                )
+
+
+def test_every_public_name_is_named_on_some_page() -> None:
+    # A name in a module's __all__ is its declared surface, and these pages are
+    # where a reader looks for it: three names were public and reached no page
+    # at all, so the only place to learn they existed was the source they are
+    # defined in. Read from __all__ rather than dir(), since what is being
+    # guarded is "declared public", not "happens to have an attribute".
+    text = "\n".join(
+        page.read_text(encoding="utf-8") for page in _documentation_pages()
+    )
+    for module in (ei, eis, oeffis, portal):
+        for name in module.__all__:
+            assert name in text, (
+                f"{module.__name__}.{name} is public but named on no page"
             )
 
 

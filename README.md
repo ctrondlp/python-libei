@@ -74,9 +74,10 @@ Each module has `is_available()`. `ei` and `eis` share the shapes around them:
 an `Error` exception, an `EventType` and `DeviceCapability` enum, and `Device`,
 `Seat`, `Region`, `Keymap`, `Touch`, `Ping`, `Event` with the frozen dataclasses
 its accessors return. `oeffis` and `portal` are smaller — `DeviceType`, no
-`EventType` or `DeviceCapability`, and their own exception classes rather than
-an `Error`. [docs/troubleshooting.md](docs/troubleshooting.md) names every class
-they raise. The package ships `py.typed`, so callers type-check against real
+`EventType` or `DeviceCapability`, `Activation` as the one frozen result a
+portal wait hands back, and their own exception classes rather than an `Error`.
+[docs/troubleshooting.md](docs/troubleshooting.md) names every class they raise.
+The package ships `py.typed`, so callers type-check against real
 annotations rather than `Any`.
 
 ## What's implemented
@@ -119,7 +120,9 @@ Beyond sending input, the wrapper also covers ping/pong round trips
 (`Device.keymap`), region mapping ids and coordinate conversion,
 `Context.disconnect()`, `Context.peek_event_type()`, and
 `Seat.request_device()`. On the server side, `libei.eis` mirrors all of it and
-adds `Eis.set_flag()` and `Client.pid`. Underneath, the ctypes layer binds 250
+adds `Eis.set_flag()` (with the `Flag` values it takes), `Client.pid`, and
+`Device.configure()` with the `ConfigureRegion` descriptions it accepts.
+Underneath, the ctypes layer binds 250
 of the 302 functions the three libraries export as of 1.6.0; what is left out,
 and why, is in
 [docs/developers/architecture.md](docs/developers/architecture.md#what-is-bound-and-what-is-deliberately-not).
@@ -364,8 +367,10 @@ a list of error messages. Start there when nothing happens.
   happens" checklist
 - [docs/vs-snegg.md](docs/vs-snegg.md) — how this differs from the reference
   bindings, and two signature issues found by cross-checking the C source
-- [docs/developers/](docs/developers/) — the four-layer architecture, and what
-  has actually been verified against which libei versions
+- [docs/developers/architecture.md](docs/developers/architecture.md) and
+  [docs/developers/verification.md](docs/developers/verification.md) — the
+  four-layer architecture, and what has actually been verified against which
+  libei versions
 - [CONTRIBUTING.md](CONTRIBUTING.md) — setup, checks, testing against an old
   libei, releasing
 

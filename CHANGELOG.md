@@ -90,6 +90,30 @@ All notable changes to python-libei are recorded here. The format follows
 
 ### Fixed
 
+- **The README's link to the developer pages landed on a file listing.**
+  `docs/developers/` holds `architecture.md` and `verification.md` and has no
+  README of its own, so the last entry of the documentation index sent a
+  reader to a directory listing rather than to anything written -- the same
+  defect the sibling recorder repo fixed in its own README, found by holding
+  this one to that fix. The entry now names both pages, and
+  `tests/test_documentation_shape.py` requires a linked directory to *have* a
+  README rather than merely to exist, which is the distinction `exists()`
+  cannot draw.
+
+- **Three public names were documented nowhere.** `eis.Flag`,
+  `eis.ConfigureRegion` and `portal.Activation` are in their modules' `__all__`
+  -- the declared surface, the thing `from libei.eis import *`, `pydoc` and an
+  IDE's completion read -- and appeared on no page of the README or `docs/`:
+  the only way to learn they existed was to open the source that defines them.
+  Each is now named where its subject is described: `Flag` and
+  `ConfigureRegion` beside `Eis.set_flag()` and `Device.configure()` in the
+  README's tour of the modules, with the region argument written out in the
+  own-EIS-server recipe, and `Activation` in the sentence saying what `portal`
+  is smaller than `ei` by. The guard runs the direction the existing checks
+  never did -- every one of them went from a page to the source, and none from
+  the declared surface back to the pages -- so a public name that ships with
+  prose nowhere is a failing test rather than a discovery.
+
 - **`scripts/pre-commit-test.sh` failed its `tests` check on any interpreter
   without the package installed.** The script runs `python -m pytest -q -rs`
   with no `PYTHONPATH`, deliberately: CI's install step is one of the two

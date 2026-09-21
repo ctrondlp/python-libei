@@ -317,7 +317,14 @@ while True:
         elif event.event_type is eis.EventType.SEAT_BIND:
             device = event.seat.new_device()
             device.configure(
-                name="my-pointer", capabilities=(eis.DeviceCapability.POINTER,)
+                name="my-pointer",
+                capabilities=(eis.DeviceCapability.POINTER,),
+                # A region is *described* rather than passed as a live
+                # eis.Region: configure() allocates, fills in and adds each
+                # one itself, so there is never a moment at which you hold
+                # one to set fields on. Omit it for a device whose space is
+                # unknown to you.
+                regions=(eis.ConfigureRegion(offset=(0, 0), size=(1920, 1080)),),
             )
             device.add()
             device.resume()  # until you resume it, the client may not send
