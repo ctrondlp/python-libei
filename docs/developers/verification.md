@@ -1,6 +1,6 @@
 # What has actually been verified
 
-The package is beta (`0.5.2`) and the API is not frozen — expect renames
+The package is beta (`0.6.0`) and the API is not frozen — expect renames
 before 1.0. This page is what that qualifier covers, concretely: which paths
 have been driven against real libraries, which have only ever been driven
 against fakes, and which libei versions the whole thing has met.
