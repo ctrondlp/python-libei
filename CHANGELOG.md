@@ -5,7 +5,7 @@ All notable changes to python-libei are recorded here. The format follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html) — with the usual
 0.x caveat that the API may still change between minor versions.
 
-## [Unreleased]
+## [0.6.0] - 2026-09-22
 
 ### Added
 
@@ -53,6 +53,28 @@ All notable changes to python-libei are recorded here. The format follows
   connection and lifecycle events, which have no getter and are read through
   `event_type`.
 
+- **CI, PyPI and license badges on the README.** The three things a reader
+  checks before installing anything -- whether the suite is green on `main`,
+  what the current release is, and under what license -- each took a click
+  through to somewhere else. The PyPI badge is also the one version statement
+  in the repository that reads what is actually *published*: the prose lines
+  that `tests/test_documentation_shape.py` guards are held to this checkout's
+  `libei.__version__`, which says nothing about what `pip install` would
+  fetch.
+
+- **`.coderabbit.yaml`**, turning the Docstring Coverage pre-merge check off
+  and telling the reviewer not to ask for docstrings under `tests/`. That
+  check scores a whole diff against a single percentage threshold and its
+  schema offers no per-path option, so it cannot see that
+  `[tool.ruff.lint.per-file-ignores]` ignores `D100`-`D104` and `D107` under
+  `tests/*` deliberately -- matching both sibling repos, on the grounds that
+  each test is named for the behaviour it pins -- and so it objected on every
+  PR that adds tests, which is most of them. Coverage of `src/` is untouched:
+  ruff's pydocstyle rules enforce it in `scripts/pre-commit-test.sh`, and
+  those *are* path-aware. The same exclusion is repeated as a
+  `path_instructions` entry, which is where it can be path-scoped, so it
+  holds whether or not the check is ever switched back on.
+
 ### Changed
 
 - **The docstring-completeness check now runs everywhere, and covers
@@ -87,6 +109,18 @@ All notable changes to python-libei are recorded here. The format follows
   And `tests/test_portal.py` now asserts what `verification.md` claimed it
   covered -- that `CreateSession` carries a `session_handle_token`, whose
   absence crashes xdg-desktop-portal 1.22.1 outright.
+
+- **39 docstrings on the dunders and private helpers that had none.** No check
+  asked for them: ruff's pydocstyle rules treat an underscore-prefixed name as
+  non-public, and this repo's config ignores `D105` outright -- so `__init__`,
+  `__eq__`, `__hash__`, `__repr__`, `__del__`, `__enter__`/`__exit__`,
+  `__init_subclass__`, `_cobject.CObject._get_or_create()`,
+  `LazyLibrary._ensure_loaded()` and both `_log_callback`s went undocumented
+  while being the definitions whose behaviour is least guessable from the
+  signature: pointer adoption and the per-hierarchy identity cache, a failed
+  `dlopen` cached rather than retried, a C function resolved on first call
+  rather than at bind time. `help()` and an IDE's hover show all of them, and
+  neither cares that a name starts with an underscore.
 
 ### Fixed
 

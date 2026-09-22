@@ -129,7 +129,7 @@ and why, is in
 
 ## Status
 
-Beta (`0.5.2`), published on [PyPI](https://pypi.org/project/python-libei/)
+Beta (`0.6.0`), published on [PyPI](https://pypi.org/project/python-libei/)
 since `0.1.0`, and **the API is not frozen** — expect renames before 1.0.
 
 The injection path is exercised end to end against the real libraries by the
