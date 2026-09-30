@@ -18,9 +18,14 @@ import pytest
 from libei._capi.loader import LazyLibrary, LibraryNotFoundError
 
 _found_libc = util.find_library("c")
-if _found_libc is None:
-    raise RuntimeError("no C library found -- these tests need one to stand in")
-_LIBC: str = _found_libc
+_LIBC: str = _found_libc or ""
+# A skip, not a module-level raise: raising here was a *collection* error, so
+# on a machine with no findable C library (Windows) pytest ran none of the
+# suite's other tests either. Only the tests that load a real library need
+# one; the loader-defers tests below run everywhere.
+_needs_libc = pytest.mark.skipif(
+    _found_libc is None, reason="needs a real C library as a stand-in (POSIX only)"
+)
 
 
 def test_import_does_not_touch_the_filesystem() -> None:
@@ -43,11 +48,13 @@ def test_missing_library_is_not_available() -> None:
     assert lib.is_available() is False
 
 
+@_needs_libc
 def test_real_library_is_available() -> None:
     lib = LazyLibrary(_LIBC)
     assert lib.is_available() is True
 
 
+@_needs_libc
 def test_real_function_call_round_trips() -> None:
     lib = LazyLibrary(_LIBC)
     abs_ = lib.function("abs", (c_int,), c_int)
@@ -67,6 +74,7 @@ def test_function_result_is_cached_across_calls() -> None:
         abs_(-1)
 
 
+@_needs_libc
 def test_missing_symbol_raises_library_not_found_error() -> None:
     lib = LazyLibrary(_LIBC)
     nonexistent = lib.function("this_symbol_does_not_exist_in_libc", (c_char_p,), c_int)
@@ -74,6 +82,7 @@ def test_missing_symbol_raises_library_not_found_error() -> None:
         nonexistent(b"x")
 
 
+@_needs_libc
 def test_two_lazy_libraries_are_independent() -> None:
     good = LazyLibrary(_LIBC)
     bad = LazyLibrary("this-library-definitely-does-not-exist.so.999")

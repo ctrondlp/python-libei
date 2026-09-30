@@ -5,6 +5,24 @@ All notable changes to python-libei are recorded here. The format follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html) — with the usual
 0.x caveat that the API may still change between minor versions.
 
+## [Unreleased]
+
+### Fixed
+
+- **The test suite ran nothing at all off Linux and FreeBSD.** `tests/test_loader.py`
+  raised at module level when `ctypes.util.find_library("c")` found no C library,
+  which pytest reports as a *collection* error -- so on Windows `pytest -q -rs`
+  stopped before any of the other 200-odd tests, including every pure-Python one.
+  The four loader tests that need a real library now skip there instead, and the
+  three tests that build a keymap with `os.memfd_create` skip where it does not
+  exist. On Windows the suite now reports 212 passed, 18 skipped; on Linux nothing
+  changes -- 230 passed against libei 1.6.0.
+- **The count of unbound gesture/stylus functions was stale.** The README and
+  `docs/developers/architecture.md` said libei's `main` adds 22; counted against
+  1.6.0's headers on 2026-09-30 it is 46 in libei and 51 in libeis, now that the
+  stylus protocol has landed there too. Still none of it is in a release, so still
+  none of it is bound.
+
 ## [0.6.0] - 2026-09-22
 
 ### Added

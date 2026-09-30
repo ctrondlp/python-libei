@@ -106,8 +106,9 @@ because a skimming reader could otherwise take them as supported. 1.6.0's own
 `enum ei_device_capability` stops at `TEXT`, and its `enum ei_event_type`
 stops at `EI_EVENT_TEXT_UTF8` — so the swipe/pinch/hold/stylus members of
 `EventType` cannot arrive either. The values here match upstream `main`
-exactly, so they are ready for whatever release adds them. The 22
-gesture/stylus accessor functions `main` adds are deliberately not bound:
+exactly, so they are ready for whatever release adds them. The gesture
+and stylus functions `main` adds -- 46 in libei and 51 in libeis against
+1.6.0's headers, counted 2026-09-30 -- are deliberately not bound:
 nothing that ships today exports them, so nothing here could be verified
 against a real library, which is the bar every other binding in this package
 was held to.

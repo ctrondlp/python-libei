@@ -385,6 +385,10 @@ def test_region_mapping_id_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
     assert region.mapping_id == "screen-0"
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "memfd_create"),
+    reason="os.memfd_create is Linux/FreeBSD only",
+)
 def test_keymap_fd_is_rewound(monkeypatch: pytest.MonkeyPatch) -> None:
     fd = os.memfd_create("keymap")
     try:
