@@ -229,6 +229,10 @@ def test_ping_round_trips_to_a_pong_event() -> None:
     assert pongs[0] == sent_id[0]
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "memfd_create"),
+    reason="os.memfd_create is Linux/FreeBSD only",
+)
 def test_keymap_transfers_and_reads_back() -> None:
     keymap_text = b"xkb_keymap { /* test */ };\x00"
     source = os.memfd_create("test-keymap")

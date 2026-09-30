@@ -55,8 +55,10 @@ deliberate:
   is only ever created by its own `create_for_*()`, never wrapped from a raw
   pointer.
 
-The 22 gesture/stylus accessor functions that libei's `main` branch adds are
-also unbound. Nothing that ships today exports them, so nothing here could be
+The gesture and stylus functions that libei's `main` branch adds -- 46 in
+libei and 51 in libeis against 1.6.0's headers, counted 2026-09-30: the
+swipe, pinch and hold senders and event getters, and the whole stylus
+protocol -- are also unbound. Nothing that ships today exports them, so nothing here could be
 verified against a real library — which is the bar every other binding in this
 package was held to.
 

@@ -735,6 +735,10 @@ def test_peek_event_type_is_none_on_an_empty_queue(
     assert ctx.peek_event_type() is None
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "memfd_create"),
+    reason="os.memfd_create is Linux/FreeBSD only",
+)
 def test_keymap_fd_is_rewound(monkeypatch: pytest.MonkeyPatch) -> None:
     # dup(2) shares the file offset, and libei leaves its own fd at EOF --
     # without a rewind the caller reads zero bytes and no error, which looks
