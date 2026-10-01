@@ -104,7 +104,7 @@ event_scroll_get_discrete_dy = lib.function(
 event_touch_get_id = lib.function("eis_event_touch_get_id", (c_void_p,), c_uint32)
 event_touch_get_x = lib.function("eis_event_touch_get_x", (c_void_p,), c_double)
 event_touch_get_y = lib.function("eis_event_touch_get_y", (c_void_p,), c_double)
-event_touch_get_is_cancel = lib.function(
+event_touch_get_is_cancel = lib.function(  # libei 1.4+
     "eis_event_touch_get_is_cancel", (c_void_p,), c_bool
 )
 event_text_get_utf8 = lib.function(  # libei 1.6+
@@ -117,14 +117,16 @@ event_text_get_keysym_is_press = lib.function(  # libei 1.6+
     "eis_event_text_get_keysym_is_press", (c_void_p,), c_bool
 )
 # Borrowed reference -- the event still owns it, so wrap() rather than adopt().
-event_pong_get_ping = lib.function("eis_event_pong_get_ping", (c_void_p,), c_void_p)
+event_pong_get_ping = lib.function(  # libei 1.4+
+    "eis_event_pong_get_ping", (c_void_p,), c_void_p
+)
 
 client_ref = lib.function("eis_client_ref", (c_void_p,), c_void_p)
 client_unref = lib.function("eis_client_unref", (c_void_p,), c_void_p)
 client_is_sender = lib.function("eis_client_is_sender", (c_void_p,), c_bool)
 # pid_t, i.e. a 32-bit signed int on Linux. Socket backend only, and
 # negative errno on failure.
-backend_socket_get_client_pid = lib.function(
+backend_socket_get_client_pid = lib.function(  # libei 1.5+
     "eis_backend_socket_get_client_pid", (c_void_p,), c_int32
 )
 client_get_name = lib.function("eis_client_get_name", (c_void_p,), c_char_p)
@@ -277,7 +279,7 @@ touch_get_device = lib.function("eis_touch_get_device", (c_void_p,), c_void_p)
 touch_down = lib.function("eis_touch_down", (c_void_p, c_double, c_double), None)
 touch_motion = lib.function("eis_touch_motion", (c_void_p, c_double, c_double), None)
 touch_up = lib.function("eis_touch_up", (c_void_p,), None)
-touch_cancel = lib.function("eis_touch_cancel", (c_void_p,), None)
+touch_cancel = lib.function("eis_touch_cancel", (c_void_p,), None)  # libei 1.4+
 
 ping = lib.function("eis_ping", (c_void_p,), None)  # libei 1.4+
 ping_get_id = lib.function("eis_ping_get_id", (c_void_p,), c_uint64)  # libei 1.4+

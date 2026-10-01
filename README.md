@@ -16,8 +16,11 @@ device.start_emulating().pointer_motion(5, 0).frame().stop_emulating()
 ```
 
 **The one concept:** events queue up, and **`frame()` is what sends them** as
-one logical hardware event. Forget it and nothing happens — no exception, no
-warning, no movement. Fill the package, then post it.
+one logical hardware event. Forget it and the motion is usually lost — no
+exception, no warning, no movement. (Ending the chain with `stop_emulating()`
+makes libei frame the queue for you, but it logs an error-level `Bug:` line
+when it does; see [Things that will bite you](#things-that-will-bite-you).) Fill
+the package, then post it.
 
 New here? [docs/getting-started.md](docs/getting-started.md) is install
 through a first real pointer motion, in five minutes.
@@ -59,8 +62,8 @@ than a widget-tree back door:
 
 ## Which API do I need?
 
-Five modules, and most callers need exactly two of them: `oeffis` or `portal`
-to get permission, then `ei` to inject.
+Four modules (`ei`, `eis`, `oeffis`, `portal`), and most callers need exactly
+two of them: `oeffis` or `portal` to get permission, then `ei` to inject.
 
 | You want to… | Use | Notes |
 | --- | --- | --- |
@@ -68,6 +71,7 @@ to get permission, then `ei` to inject.
 | **Consume input** from a compositor | `libei.ei` → `Receiver` | Compositor-side or input-capture code; same connection dance |
 | **Get permission**, simply | `libei.oeffis` | One call, pollable fd, no dependencies. The consent dialog appears on **every** run |
 | **Get permission**, and not be asked again | `libei.portal` | Same handshake over D-Bus directly, with `persist_mode` / `restore_token`. Needs PyGObject |
+| **Capture the user's real input** | `libei.portal` → `InputCaptureSession` | The read direction, through the InputCapture portal: once the compositor decides to, the user's pointer and keyboard are diverted to you over EIS. Exclusive while active, so hold it briefly. Only its negotiation half has been run against a real desktop — see [verification](docs/developers/verification.md) |
 | **Be the server**, for tests or a compositor | `libei.eis` | Drives your client code with no real compositor and no consent dialog |
 
 Each module has `is_available()`. `ei` and `eis` share the shapes around them:
@@ -130,7 +134,7 @@ and why, is in
 
 ## Status
 
-Beta (`0.6.0`), published on [PyPI](https://pypi.org/project/python-libei/)
+Beta (`0.6.1`), published on [PyPI](https://pypi.org/project/python-libei/)
 since `0.1.0`, and **the API is not frozen** — expect renames before 1.0.
 
 The injection path is exercised end to end against the real libraries by the
@@ -171,9 +175,13 @@ Exactly what was run, when, and against which versions:
 - libei 1.0.0 or newer for the core: connecting, binding a seat, and
   sending pointer, button, keyboard, scroll and touch input all use symbols
   that have existed with a stable signature since 1.0.0, and upstream keeps
-  API/ABI back-compatible within the 1.x series. Only 1.5.0 and 1.6.0 have
-  actually been run against -- 1.6.0 on both Fedora 44 and FreeBSD 15, where
-  the injection path passes the full suite with nothing skipped.
+  API/ABI back-compatible within the 1.x series. The suite has been run
+  against 1.2.1 (Ubuntu 24.04, in CI) and 1.6.0 -- the latter on Fedora 44 and
+  45 and FreeBSD 15, where the injection path passes the full suite with
+  nothing skipped. Every binding's name, argument types and return type, and
+  every enum value, is also checked against the upstream headers of 1.0.0,
+  1.2.1, 1.4.0, 1.5.0 and 1.6.0 (`tests/test_abi.py`), which is the only
+  coverage 1.0.0, 1.4.0 and 1.5.0 have had.
 
   Newer libei buys you more, per feature:
 
@@ -331,8 +339,12 @@ All four, with working code:
   soon as the loop moves on, and using it afterwards raises `RuntimeError`.
   Objects you pull *off* an event (`event.device`, `event.seat`) are safe to
   keep — copy out `event.pointer_event` and friends rather than the event.
-- **`frame()` or nothing happens.** Events queue up until a `frame()` commits
-  them.
+- **`frame()` or the input is lost.** Events queue up until a `frame()` commits
+  them, and queued events that are never framed are dropped without an
+  exception or a log line. The one exception is a chain that ends in
+  `stop_emulating()`: libei frames what is queued, delivers it, and logs
+  `Bug: ei_device_stop_emulating: missing call to ei_device_frame()` at error
+  level. Measured against libei 1.2.1 and 1.6.0; don't rely on it.
 - **`bind()` needs at least one capability.** Binding an empty set sends
   nothing, so the device you are waiting for never arrives; this raises
   `ValueError` rather than hanging.
@@ -341,20 +353,22 @@ All four, with working code:
 - **One seat can resume several devices.** Bind both `POINTER` and
   `POINTER_ABSOLUTE` and GNOME gives you two, relative first. Taking
   whichever resumes first is a coin flip — select on `device.capabilities`
-  instead. Sending an event the device lacks the capability for is silently
-  ignored, which makes this look like the injection simply not working.
+  instead. Sending an event the device lacks the capability for is dropped with
+  no exception — libei only logs an error-level `Bug: ... device is not a
+  keyboard` line — which makes this look like the injection simply not working.
 - **Read the accessor that matches the event type.** `event.key_event` on a
   `POINTER_MOTION` event raises `TypeError` naming both types. libei itself
   would have returned `KeyEvent(key=0, is_press=False)` — a real-looking
-  value — while logging a `Bug:` line the caller never sees, so branch on
-  `event_type` first. `TOUCH_UP` has its own `touch_up_event`, since it
+  value — and raised nothing, only logging a `Bug:` line at error level, so
+  branch on `event_type` first. `TOUCH_UP` has its own `touch_up_event`, since it
   carries no coordinates.
 - **`GESTURES` and `STYLUS` are not in any released libei.** They match
   upstream `main` and are here ready for it, but 1.6.0's capability enum
   stops at `TEXT`. Binding them against a shipping library silently does
   nothing — no error, no device, no events.
 
-Nearly all of these fail *silently*, which is why
+Nearly all of these fail without raising — some only log an error-level `Bug:`
+line, some not even that — which is why
 [docs/troubleshooting.md](docs/troubleshooting.md) is a checklist rather than
 a list of error messages. Start there when nothing happens.
 

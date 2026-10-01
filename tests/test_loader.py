@@ -11,7 +11,8 @@ asked to load doesn't exist there.
 
 from __future__ import annotations
 
-from ctypes import c_char_p, c_int, util
+import sys
+from ctypes import ArgumentError, c_char_p, c_int, c_void_p, util
 
 import pytest
 
@@ -88,3 +89,110 @@ def test_two_lazy_libraries_are_independent() -> None:
     bad = LazyLibrary("this-library-definitely-does-not-exist.so.999")
     assert good.is_available() is True
     assert bad.is_available() is False
+
+
+@_needs_libc
+def test_a_missing_symbol_names_itself_and_leaves_the_rest_working() -> None:
+    # A library that loads but lacks a newer symbol (an old libei asked for a
+    # 1.6 function) must fail that one call, by name, and nothing else: the
+    # older functions keep working before and after, and asking again gives
+    # the same answer rather than a half-initialised state.
+    lib = LazyLibrary(_LIBC)
+    present = lib.function("abs", (c_int,), c_int)
+    absent = lib.function("symbol_added_in_a_newer_release", (c_int,), c_int)
+
+    assert present(-3) == 3
+    for _ in range(3):
+        with pytest.raises(LibraryNotFoundError) as caught:
+            absent(1)
+        assert "symbol_added_in_a_newer_release" in str(caught.value)
+        assert present(-4) == 4
+        assert lib.is_available() is True
+
+
+@_needs_libc
+def test_a_missing_symbol_is_not_resolved_until_it_is_called() -> None:
+    lib = LazyLibrary(_LIBC)
+    absent = lib.function("symbol_added_in_a_newer_release", (c_int,), c_int)
+    # Declaring it, and calling something else, cost nothing and raised nothing.
+    assert lib.function("abs", (c_int,), c_int)(-1) == 1
+    assert "symbol_added_in_a_newer_release" in lib.declared
+    with pytest.raises(LibraryNotFoundError):
+        absent(0)
+
+
+def test_declarations_are_recorded_without_opening_the_library() -> None:
+    lib = LazyLibrary("this-library-definitely-does-not-exist.so.999")
+    lib.function("abs", (c_int,), c_int)
+    lib.function("puts", (c_char_p,), None)
+    assert lib.declared == {"abs": ((c_int,), c_int), "puts": ((c_char_p,), None)}
+    assert lib.soname == "this-library-definitely-does-not-exist.so.999"
+    # Only a call may fail; reading the registry must not have tried to load.
+    assert lib._lib is None and lib._load_error is None
+
+
+@_needs_libc
+def test_concurrent_first_calls_open_the_library_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The double-checked lock in _ensure_loaded is there for exactly this.
+    import ctypes
+    import threading
+
+    opened: list[str] = []
+    real = ctypes.CDLL
+
+    def counting(name: str, *args: object, **kwargs: object) -> ctypes.CDLL:
+        opened.append(name)
+        return real(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ctypes, "CDLL", counting)
+    lib = LazyLibrary(_LIBC)
+    abs_ = lib.function("abs", (c_int,), c_int)
+    start = threading.Barrier(8)
+    results: list[int] = []
+
+    def worker() -> None:
+        start.wait()
+        results.append(abs_(-5))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results == [5] * 8
+    assert opened == [_LIBC]
+
+
+class _Released:
+    """What a released CObject looks like to ctypes."""
+
+    @property
+    def _as_parameter_(self) -> int:
+        raise RuntimeError("Thing has already been released")
+
+
+def _stand_in_library() -> str | None:
+    # msvcrt on Windows, where find_library("c") finds nothing: this test needs
+    # only *a* C function taking an int, and it is the one about ctypes itself.
+    return "msvcrt" if sys.platform == "win32" else _found_libc
+
+
+def test_a_released_object_raises_runtime_error_not_ctypes_argument_error() -> None:
+    # ctypes wraps whatever _as_parameter_ raises in an ArgumentError that keeps
+    # only the message. The mocked suites never cross ctypes, so they passed
+    # while a real call with a released Event raised ArgumentError -- and the
+    # documented `except RuntimeError` missed it.
+    soname = _stand_in_library()
+    if soname is None:
+        pytest.skip("needs a real C library as a stand-in")
+    lib = LazyLibrary(soname)
+    abs_ = lib.function("abs", (c_void_p,), c_int)
+    with pytest.raises(RuntimeError, match="already been released"):
+        abs_(_Released())
+    # An ordinary bad argument is still ctypes' own error, untouched.
+    with pytest.raises(ArgumentError):
+        abs_(object())
+    # And a good call is unaffected.
+    assert abs_(0) == 0

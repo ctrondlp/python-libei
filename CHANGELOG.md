@@ -7,7 +7,61 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-01
+
+### Changed
+
+- **The package metadata and README now say `libei.portal` captures input, and
+  the README counts its modules right.** `InputCaptureSession` -- receiving the
+  user's real pointer and keyboard through the InputCapture portal -- was in the
+  module docstring and nowhere a reader looks: not the PyPI description, not the
+  keywords, and not the README's table of what to use for what. The description
+  now names it, `input-capture` and `eis` join the keywords, and the table has a
+  row that says, as `docs/developers/verification.md` does, that only its
+  negotiation half has been run against a real desktop. Also the `POSIX`
+  operating-system classifier the other two packages carry, a `documentation` URL
+  and a link to pyguitest, its main consumer. The README said "Five modules"
+  where there are four (`ei`, `eis`, `oeffis`, `portal`; the table has five rows).
+  `InputCaptureSession`'s docstring said "Never live-tested", which the
+  verification log contradicts for its negotiation half; it now says half.
+
 ### Fixed
+
+- **Using a released event raised `ctypes.ArgumentError`, not the documented
+  `RuntimeError`.** Each event is released as the loop moves on, and the README
+  and `docs/recipes.md` promise a `RuntimeError` if one is used afterwards. What
+  a caller actually got, from a real call, was
+  `ArgumentError: argument 1: RuntimeError: Event has already been released` --
+  ctypes wraps anything raised while converting an argument and keeps only its
+  text, so `except RuntimeError` missed it. The unit test passed because it read
+  `_as_parameter_` directly and never crossed ctypes; found by probing the real
+  library for the README's claims. `LazyLibrary` now re-raises the original
+  `RuntimeError` when an argument is a released object, and an ordinary bad
+  argument is still ctypes' own error.
+
+- **Six bindings named no libei version, so an old library read as a mystery.**
+  `ei_touch_cancel`, `ei_event_touch_get_is_cancel`, `ei_event_pong_get_ping` and
+  their libeis counterparts arrived in libei 1.4, and
+  `eis_backend_socket_get_client_pid` in 1.5; none carried the `# libei X.Y+`
+  marker the other gated declarations do. Found by checking every declaration
+  against the headers of 1.0.0, 1.2.1, 1.4.0, 1.5.0 and 1.6.0. Behaviour was
+  already right -- the README's version table had them correctly -- so this is
+  the source catching up with it.
+
+- **The docs said forgetting `frame()` means nothing happens, silently. It is
+  only true without `stop_emulating()`.** Measured against libei 1.2.1 and 1.6.0:
+  a motion queued and then followed by `stop_emulating()` is delivered, in a
+  `FRAME` libei adds itself, and logged as an error --
+  `Bug: ei_device_stop_emulating: missing call to ei_device_frame()`. Only a
+  queue that is never stopped is dropped with no log line at all. The README,
+  getting-started and troubleshooting now say so. The same probing corrected
+  two more claims: an event sent to a device lacking the capability is dropped
+  with a `Bug: ... device is not a keyboard` error log rather than "silently",
+  and the wrong-accessor read libei answers with zeros is likewise logged at
+  error level rather than "a line the caller never sees". The README's list of
+  versions the suite has been run against named 1.5.0, which
+  `docs/developers/verification.md` has no record of, and contradicted its own
+  Status section on CI's 1.2.1; both now agree.
 
 - **The test suite ran nothing at all off Linux and FreeBSD.** `tests/test_loader.py`
   raised at module level when `ctypes.util.find_library("c")` found no C library,
@@ -22,6 +76,31 @@ All notable changes to python-libei are recorded here. The format follows
   1.6.0's headers on 2026-09-30 it is 46 in libei and 51 in libeis, now that the
   stylus protocol has landed there too. Still none of it is in a release, so still
   none of it is bound.
+
+### Tests
+
+- **The bindings are checked against the real headers and libraries.**
+  `tests/test_abi.py` compares every declared function's argument count and
+  argument and return classes (pointer, 4- or 8-byte int, double, bool, void)
+  with the upstream prototype, every Python enum member with its C enumerator
+  value, and every declaration with the installed library's exports, where a
+  missing one must carry a version marker. There are no `ctypes.Structure`
+  bindings, so there is no layout to check. It needs the headers, via
+  `LIBEI_SOURCE_DIR`, and otherwise skips; see CONTRIBUTING.md. Clean against
+  the public headers of 1.0.0, 1.2.1, 1.4.0, 1.5.0 and 1.6.0, and against the
+  installed 1.6.0 (Fedora 45) and 1.2.1 (Ubuntu 24.04) libraries.
+  `LazyLibrary` now records what is declared on it (`declared`, `soname`) for this.
+- **Every event accessor against every event type.**
+  `tests/test_event_accessors.py` reads the accessor list from the source, so a
+  new one is covered automatically, and checks that each raises `TypeError`
+  before any C accessor is called for every wrong type, on both the client and
+  server side, and that an accessor added without a guard fails. Previously one
+  wrong type per library was pinned.
+- **Forgetting `frame()` and using a released event, against the real library.**
+  `tests/test_integration_frame.py` pins the four behaviours above and
+  `tests/test_integration_lifetime.py` the released-event error; the loader tests
+  gain missing-symbol behaviour (named, repeatable, the rest still working) and
+  one-open-under-concurrent-first-calls.
 
 ## [0.6.0] - 2026-09-22
 

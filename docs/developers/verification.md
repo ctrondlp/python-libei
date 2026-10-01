@@ -1,6 +1,6 @@
 # What has actually been verified
 
-The package is beta (`0.6.0`) and the API is not frozen — expect renames
+The package is beta (`0.6.1`) and the API is not frozen — expect renames
 before 1.0. This page is what that qualifier covers, concretely: which paths
 have been driven against real libraries, which have only ever been driven
 against fakes, and which libei versions the whole thing has met.
@@ -79,7 +79,30 @@ By hand:
   and 1.6 features gating themselves out.
 - CI repeats the 1.2.1 run on Python 3.10–3.13, so the 1.0.0 core floor is
   exercised on a real old build rather than asserted.
-- **1.0–1.1 and 1.3 have never been run against.**
+- Re-run 2026-09-30 against **1.6.0** on Fedora 45 (libei 1.6.0-3, under Python
+  3.15rc2) and against Ubuntu 24.04's **1.2.1** in a container: the full suite
+  passes on both, the 1.4 and 1.6 features gating themselves out on 1.2.1.
+- **1.0–1.1 and 1.3 have never been run against** -- and neither has 1.4 or 1.5
+  at runtime. What they have had is the header check below.
+
+### Checked against the headers
+
+`tests/test_abi.py` compares every bound function's argument count, argument
+classes and return class (pointer, 4-byte int, 8-byte int, double, bool, void)
+with the upstream prototype, and every Python enum member's value with the C
+enumerator. It needs the headers, so it runs only when `LIBEI_SOURCE_DIR` names
+an upstream checkout (or an installed `libei-dev` provides them). Run on
+2026-09-30 against the public headers of **1.0.0, 1.2.1, 1.4.0, 1.5.0 and
+1.6.0**, with the installed 1.6.0 and 1.2.1 libraries checked for every
+declared export: clean on all five once six declarations were marked with the
+release that added them (touch cancellation and `pong_get_ping` on both sides
+in 1.4, `eis_backend_socket_get_client_pid` in 1.5). They had no marker, so the
+version each one needs was missing from the source -- an omission that cost
+nothing on 1.6 and would have presented as an unexplained missing symbol on an
+older library.
+
+There are no `ctypes.Structure` bindings, so there is no layout to verify;
+every object is an opaque pointer and every value crosses as a scalar.
 
 A separate CI job installs the package with no native libraries at all and
 imports it, which is the property the lazy loader exists to provide.

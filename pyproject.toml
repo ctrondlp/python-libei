@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-libei"
-version = "0.6.0"
-description = "Inject and receive input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis"
+version = "0.6.1"
+description = "Inject, receive and capture input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis, plus the RemoteDesktop and InputCapture portals"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -18,6 +18,8 @@ keywords = [
     "input",
     "input-emulation",
     "emulated-input",
+    "input-capture",
+    "eis",
     "portal",
     "xdg-desktop-portal",
     "remote-desktop",
@@ -31,6 +33,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: BSD :: FreeBSD",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: POSIX",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -62,6 +65,8 @@ dev = ["pytest>=7", "ruff>=0.6", "mypy>=1.11"]
 homepage = "https://github.com/ctrondlp/python-libei"
 repository = "https://github.com/ctrondlp/python-libei"
 issues = "https://github.com/ctrondlp/python-libei/issues"
+documentation = "https://github.com/ctrondlp/python-libei/tree/main/docs"
+pyguitest = "https://github.com/ctrondlp/pyguitest"
 changelog = "https://github.com/ctrondlp/python-libei/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]

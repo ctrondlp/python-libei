@@ -1176,12 +1176,13 @@ class InputCaptureSession:
     about, and this cannot release on a caller's behalf during cleanup
     without risking racing a capture that only just started.
 
-    **Never live-tested.** Every other class in this module that talks to a
-    real portal carries a hand-verification note in its own docstring; this
-    one does not, because verifying it means a developer clicking through
-    the consent dialog *and* accepting that their pointer will be diverted
-    away from their own desktop for the length of the test -- not something
-    to trigger without asking first, unlike everything else here. Designed
+    **Only half live-tested.** The negotiation -- consent dialog, EIS fd,
+    zones, ``Session.Close()`` -- was run against a real GNOME session on
+    libei's own hand-verification terms (see
+    ``docs/developers/verification.md``); the *capture* half never has been,
+    because verifying it means a developer accepting that their pointer will
+    be diverted away from their own desktop for the length of the test -- not
+    something to trigger without asking first, unlike everything else here. Designed
     against ``/usr/share/dbus-1/interfaces/org.freedesktop.portal.
     InputCapture.xml`` (the shipped portal spec, not the header alone) and
     unit-tested against a fake connection reproducing that spec's documented

@@ -37,9 +37,14 @@ them as one logical hardware event**:
 device.start_emulating().pointer_motion(5, 0).frame().stop_emulating()
 ```
 
-Forget `frame()` and nothing happens. No exception, no warning, no movement —
-which is the single most common reason a first attempt appears to do nothing
-at all. Each method returns the device, so they chain.
+Forget `frame()` and the motion is usually lost: queued events that are never
+framed go nowhere, with no exception, no warning and no movement — the most
+common reason a first attempt appears to do nothing at all. The one exception
+is a chain that ends in `stop_emulating()`, as above: libei frames what is
+queued for you, the pointer moves, and it logs an error-level
+`Bug: ei_device_stop_emulating: missing call to ei_device_frame()`. Do not rely
+on that; call `frame()` and the log stays quiet. Each method returns the
+device, so they chain.
 
 ## 3. The five words you need
 

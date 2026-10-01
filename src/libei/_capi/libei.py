@@ -128,7 +128,7 @@ event_scroll_get_discrete_dy = lib.function(
 event_touch_get_id = lib.function("ei_event_touch_get_id", (c_void_p,), c_uint32)
 event_touch_get_x = lib.function("ei_event_touch_get_x", (c_void_p,), c_double)
 event_touch_get_y = lib.function("ei_event_touch_get_y", (c_void_p,), c_double)
-event_touch_get_is_cancel = lib.function(
+event_touch_get_is_cancel = lib.function(  # libei 1.4+
     "ei_event_touch_get_is_cancel", (c_void_p,), c_bool
 )
 event_text_get_utf8 = lib.function(  # libei 1.6+
@@ -141,7 +141,9 @@ event_text_get_keysym_is_press = lib.function(  # libei 1.6+
     "ei_event_text_get_keysym_is_press", (c_void_p,), c_bool
 )
 # Borrowed reference -- the event still owns it, so wrap() rather than adopt().
-event_pong_get_ping = lib.function("ei_event_pong_get_ping", (c_void_p,), c_void_p)
+event_pong_get_ping = lib.function(  # libei 1.4+
+    "ei_event_pong_get_ping", (c_void_p,), c_void_p
+)
 
 device_ref = lib.function("ei_device_ref", (c_void_p,), c_void_p)
 device_unref = lib.function("ei_device_unref", (c_void_p,), c_void_p)
@@ -236,7 +238,7 @@ touch_get_device = lib.function("ei_touch_get_device", (c_void_p,), c_void_p)
 touch_down = lib.function("ei_touch_down", (c_void_p, c_double, c_double), None)
 touch_motion = lib.function("ei_touch_motion", (c_void_p, c_double, c_double), None)
 touch_up = lib.function("ei_touch_up", (c_void_p,), None)
-touch_cancel = lib.function("ei_touch_cancel", (c_void_p,), None)
+touch_cancel = lib.function("ei_touch_cancel", (c_void_p,), None)  # libei 1.4+
 
 # ei_new_ping() returns an owned reference; ei_ping() then triggers the round
 # trip that comes back as an EI_EVENT_PONG.

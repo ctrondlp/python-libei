@@ -1,0 +1,27 @@
+# Line endings and binary-ness, decided by git rather than by whichever editor
+# or platform last touched a file. The companion to `.editorconfig`: that one
+# tells an editor what to write, and this one makes git normalize what it
+# stores, which is the half an editor's settings cannot reach.
+#
+# Why it earns its place: this package is a Linux library (libei is) that is
+# also edited from Windows, where a global `core.autocrlf` would otherwise
+# check these files out with CRLF -- and a shell script with CRLF endings
+# fails on Linux with a confusing "bad interpreter" error. Every tracked file
+# already has LF in the index -- measured, not assumed -- so there is nothing
+# to renormalize for this to take effect.
+#
+# `text=auto` lets git decide what is text; `eol=lf` is what it puts in the
+# working tree even on Windows.
+* text=auto eol=lf
+
+# Not text at all: git must never translate these.
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.so binary
+*.pyc binary
+*.whl binary
+*.zip binary
+*.tar.gz binary

@@ -67,6 +67,24 @@ LD_LIBRARY_PATH=$PWD/prefix/lib64 pytest -q -rs   # from this checkout
 
 Expect passes plus skips, never failures or hangs.
 
+### Checking the bindings against the headers
+
+`tests/test_abi.py` compares every binding with the upstream prototypes and
+enums, but only when it can find the headers. Point `LIBEI_SOURCE_DIR` at an
+upstream checkout or release tarball (the directory holding `meson.build`):
+
+```sh
+for v in 1.0.0 1.2.1 1.4.0 1.6.0; do
+  curl -sL https://gitlab.freedesktop.org/libinput/libei/-/archive/$v/libei-$v.tar.gz | tar xz
+  LIBEI_SOURCE_DIR=$PWD/libei-$v pytest tests/test_abi.py -q
+done
+```
+
+A failure there means a wrong argument count or width, or a wrong enum value --
+or a function declared without the `# libei X.Y+` marker on its `lib.function(`
+line saying which release added it. Without the headers, only the check against
+the installed libraries runs, and the rest skips.
+
 A separate job installs the package with no native libraries at all and
 imports it, which is the property the lazy loader exists to provide. What has
 and has not been verified, and against which libei versions, is in
