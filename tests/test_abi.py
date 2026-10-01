@@ -196,8 +196,11 @@ def _size_class(ctype: str) -> str:
         return "bool"
     if ctype == "double":
         return "f64"
-    if ctype in ("uint64_t", "int64_t", "size_t", "ssize_t", "uintptr_t"):
+    if ctype in ("uint64_t", "int64_t"):
         return "i8"
+    if ctype in ("size_t", "ssize_t", "uintptr_t"):
+        # Pointer-sized, not fixed-width: 4 bytes on a 32-bit build.
+        return {4: "i4", 8: "i8"}[ctypes.sizeof(ctypes.c_size_t)]
     if ctype.startswith("enum ") or ctype in (
         "int",
         "uint32_t",
