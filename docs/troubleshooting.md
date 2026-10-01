@@ -10,7 +10,10 @@ error messages.
 Work down it in order. The first three account for most cases.
 
 1. **Did you call `frame()`?** Events queue until a frame commits them.
-   Without one, nothing is ever sent. No exception, no warning.
+   Without one they are never sent, with no exception and no warning — unless
+   you then called `stop_emulating()`, when libei frames them itself and logs
+   `Bug: ei_device_stop_emulating: missing call to ei_device_frame()` at error
+   level. If you see that line, add the `frame()`.
 
 2. **Did you wait for `DEVICE_RESUMED`, not `DEVICE_ADDED`?** A device arrives
    paused. libei calls sending events before it resumes "a client bug", and

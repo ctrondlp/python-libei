@@ -30,6 +30,7 @@ class LazyLibrary:
         self._lib: ctypes.CDLL | None = None
         self._load_error: OSError | None = None
         self._lock = threading.Lock()
+        self._declared: dict[str, tuple[tuple[type, ...], type | None]] = {}
 
     def _ensure_loaded(self) -> ctypes.CDLL:
         """Return the opened library, opening it on first call.
@@ -75,6 +76,21 @@ class LazyLibrary:
             return False
         return True
 
+    @property
+    def soname(self) -> str:
+        """The shared library this binds, as it is passed to ``dlopen``."""
+        return self._soname
+
+    @property
+    def declared(self) -> dict[str, tuple[tuple[type, ...], type | None]]:
+        """Every function bound so far: C name -> (argtypes, restype).
+
+        Read by the ABI tests, which compare it with the library's exports and
+        with the upstream headers. Declaring a binding records it here and does
+        nothing else -- the library is still not opened until a call.
+        """
+        return dict(self._declared)
+
     def function(
         self,
         name: str,
@@ -94,6 +110,7 @@ class LazyLibrary:
         # the dict is chosen only because "absent from the dict" already
         # means "not resolved yet", with no None sentinel to confuse with a
         # legitimately-None value.
+        self._declared[name] = (tuple(argtypes), restype)
         cache: dict[str, Any] = {}
 
         def call(*args: Any) -> Any:
@@ -113,7 +130,23 @@ class LazyLibrary:
                 bound.argtypes = list(argtypes)
                 bound.restype = restype
                 cache["f"] = bound
-            return bound(*args)
+            try:
+                return bound(*args)
+            except ctypes.ArgumentError:
+                # ctypes turns *any* exception raised while converting an
+                # argument into an ArgumentError carrying only its text -- no
+                # __cause__, no __context__. For a released object that loses
+                # the RuntimeError its ``_as_parameter_`` raised, so a caller
+                # catching RuntimeError (as documented) would miss it. Ask the
+                # arguments again and re-raise the real one.
+                for arg in args:
+                    try:
+                        arg._as_parameter_  # noqa: B018 - evaluated for its error
+                    except RuntimeError as released:
+                        raise released from None
+                    except AttributeError:
+                        continue
+                raise
 
         call.__name__ = name
         return call
