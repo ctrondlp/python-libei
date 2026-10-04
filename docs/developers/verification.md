@@ -37,13 +37,31 @@ By hand:
   relative pointer, keyboard, absolute pointer, in that order, which is the
   device race `ei`-side callers must handle; and `Session.Close()` was
   exercised. No input was injected — emulation is `libei.ei`'s job.
-- **`libei.portal.InputCaptureSession` (added 0.5.0), negotiation half only**,
+- **`libei.portal.InputCaptureSession` (added 0.5.0), the v1 half**,
   2026-09-08, against a real Fedora 44 / GNOME Shell 50.0 session
   (xdg-desktop-portal 1.21.1). That portal reports InputCapture **version 0**,
   so this exercised the **v1 `CreateSession` path**: consent dialog approved,
   a real EIS fd returned, `zones()` answering `(0, [(1920, 1080, 0, 0)])`, and
-  `Session.Close()` exercised. The v2 `CreateSession2` -> `Start` path has
-  still never been run live.
+  `Session.Close()` exercised.
+
+- **The v2 half, `CreateSession2` -> `Start`**, 2026-10-04, against a real
+  Fedora 45 / GNOME Shell 51.0 session (xdg-desktop-portal 1.22.1,
+  xdg-desktop-portal-gnome 51.0, libei 1.6.0, Python 3.15rc2). That portal
+  reports InputCapture **version 2**, so the version gate sent this run down
+  the half the 2026-09-08 one could not reach -- and v1 is not reachable there
+  at all any more, which makes the two dates a pair rather than a repeat. Every
+  call was driven live, in order: `CreateSession2` (0.03s -- a plain call, with
+  the session existing before anything is asked), `Start` (12.94s -- the
+  consent dialog, approved), `ConnectToEIS` (0.10s -- a real EIS fd; `fstat`
+  reports a socket), `GetZones` (0.06s, answering `(0, [(1920, 974, 0, 0)])`)
+  and `Session.Close` (0.03s): 13.07s end to end. Nothing was captured, and
+  nothing could have been -- the run stopped at negotiation, and by the shipped
+  spec it is `Enable` that arms capture, not `Start`.
+
+  So both negotiation routes have now been run against a real compositor. Two
+  things remain untested live on this route: persistence, since `persist_mode`
+  and the `restore_token` `Start` returns are v2 additions this run did not
+  use -- and the capture half itself.
 
   **The capture half remains unverified**, and unlike the rest of
   `libei.portal` its consent dialog is not the whole reason why. Approving a
