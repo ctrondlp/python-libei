@@ -1,5 +1,6 @@
 # python-libei
 
+[![Contributing](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](https://github.com/ctrondlp/python-libei/blob/main/CONTRIBUTING.md)
 [![CI](https://github.com/ctrondlp/python-libei/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ctrondlp/python-libei/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/python-libei)](https://pypi.org/project/python-libei/)
 [![License](https://img.shields.io/pypi/l/python-libei)](https://github.com/ctrondlp/python-libei/blob/main/LICENSE)

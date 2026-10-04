@@ -92,9 +92,20 @@ and has not been verified, and against which libei versions, is in
 
 ## Releasing
 
-Versions are SemVer and live in two places — `pyproject.toml` and
-`src/libei/__init__.py` — which have to agree with each other and with the
-tag. Nothing enforces that yet.
+Versions are SemVer and live in four places. Each one is checked rather than
+trusted, so a bump that misses one fails somewhere instead of shipping:
+
+- `pyproject.toml` — what pip and the built artifacts use.
+- `src/libei/__init__.py` — what a caller introspects, held to
+  `pyproject.toml` by
+  `tests/test_documentation_shape.py::test_version_is_declared_identically_in_both_places`.
+- `README.md` and `docs/developers/verification.md` — both state it in prose,
+  and `test_status_pages_name_the_current_version` fails if either stops
+  naming the current one.
+- **The release tag.** CI's `build` job reads the version back out of the
+  built sdist — not out of the source — and fails the tag push when the two
+  disagree, so a PyPI number is never spent on a tag describing a different
+  tree.
 
 A release is an annotated, `v`-prefixed tag. Pushing it is the whole of it;
 PyPI is the only place a release is published, and no GitHub Release is cut:
