@@ -83,6 +83,7 @@ class FakeInputCaptureConnection:
         pending_activated: dict[str, Any] | None = None,
         pending_deactivated: dict[str, Any] | None = None,
         signal_session_handle: str | None = None,
+        pending_closed: bool = False,
     ) -> None:
         self.session_handle = session_handle
         self.signal_session_handle = signal_session_handle or session_handle
@@ -105,6 +106,7 @@ class FakeInputCaptureConnection:
         self._pending_reply: tuple[str, int, dict[str, Any]] | None = None
         self._pending_activated = pending_activated
         self._pending_deactivated = pending_deactivated
+        self._pending_closed = pending_closed
         # A permanent log, unlike _subscriptions: signal_unsubscribe removes
         # an entry from that (correctly -- see its own docstring), so a test
         # checking *what was subscribed to* after the fact needs a record
@@ -184,6 +186,13 @@ class FakeInputCaptureConnection:
             payload = self._pending_deactivated
             self._pending_deactivated = None
             self._emit_session_signal(callback, "Deactivated", payload)
+        elif signal == "Closed" and self._pending_closed:
+            # Closed fires on the session object's own path, not the
+            # portal's -- the opposite of Activated/Deactivated above -- so
+            # it is only delivered to a subscription made there.
+            if path == self.session_handle:
+                self._pending_closed = False
+                callback(None, None, path, None, "Closed", FakeReply(({},)))
         return self._next_subscription_id
 
     def _emit_session_signal(
@@ -770,3 +779,91 @@ def test_a_failed_session_close_does_not_propagate() -> None:
     with install_fake_gi(connection):
         session = portal.InputCaptureSession.negotiate(connection=connection)
         session.close()  # must not raise
+
+
+# -- the session Closed signal ------------------------------------------------
+
+
+def test_a_closed_session_ends_wait_for_activation_rather_than_hanging() -> None:
+    # The compositor-disconnect case: Session.Closed fires when the portal
+    # or compositor ends the session from its side. Before the Closed
+    # subscription existed, a wait with timeout=None on such a session
+    # blocked forever -- indistinguishable from a barrier nobody had
+    # crossed yet.
+    connection = FakeInputCaptureConnection(pending_closed=True)
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalSessionClosedError) as excinfo:
+            session.wait_for_activation(timeout=None)
+    assert excinfo.value.step == "Activated"
+
+
+def test_a_closed_session_ends_wait_for_deactivation_too() -> None:
+    connection = FakeInputCaptureConnection(pending_closed=True)
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalSessionClosedError) as excinfo:
+            session.wait_for_deactivation(timeout=None)
+    assert excinfo.value.step == "Deactivated"
+
+
+def test_closed_is_subscribed_on_the_session_path_not_the_portal() -> None:
+    # The mirror image of the Activated-path bug: Closed is the one signal
+    # that really does fire on the session object's own path, so the
+    # subscription has to go there.
+    connection = FakeInputCaptureConnection()
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalTimeoutError):
+            session.wait_for_activation(timeout=0.01)
+    subscribed = {
+        key[2] for key in connection.signal_subscriptions if key[1] == "Closed"
+    }
+    assert subscribed == {connection.session_handle}
+
+
+def test_every_wait_subscription_is_unsubscribed_again() -> None:
+    # Both the signal's own subscription and the Closed one: a leak here
+    # means a long-running capture loop accumulates one dead subscription
+    # per activation cycle.
+    connection = FakeInputCaptureConnection(pending_activated={"activation_id": 1})
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        session.wait_for_activation(timeout=1.0)
+    live = [k for k in connection._subscriptions if k[1] in ("Activated", "Closed")]
+    assert live == []
+
+
+def test_a_session_closed_mid_wait_still_cleans_up_its_subscriptions() -> None:
+    connection = FakeInputCaptureConnection(pending_closed=True)
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalSessionClosedError):
+            session.wait_for_activation(timeout=None)
+    live = [k for k in connection._subscriptions if k[1] in ("Activated", "Closed")]
+    assert live == []
+
+
+def test_repeated_activation_cycles_each_get_their_own_signal() -> None:
+    # A capture loop waits, releases, waits again -- each wait is its own
+    # subscription, delivered its own payload, with nothing carried over.
+    connection = FakeInputCaptureConnection(pending_activated={"activation_id": 1})
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        first = session.wait_for_activation(timeout=1.0)
+        connection._pending_activated = {"activation_id": 2}
+        second = session.wait_for_activation(timeout=1.0)
+    assert (first.activation_id, second.activation_id) == (1, 2)
+
+
+def test_an_activation_payload_without_an_id_defaults_to_zero() -> None:
+    # The spec says activation_id is always sent; a portal that omits it
+    # anyway gets the same 0 a compositor that "could not determine" sends,
+    # rather than a KeyError mid-wait.
+    connection = FakeInputCaptureConnection(pending_activated={})
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        activation = session.wait_for_activation(timeout=1.0)
+    assert activation == portal.Activation(
+        activation_id=0, cursor_position=None, barrier_id=None
+    )

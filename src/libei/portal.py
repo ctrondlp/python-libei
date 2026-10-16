@@ -185,6 +185,28 @@ class PortalDeniedError(PortalError):
         self.message = message
 
 
+class PortalSessionClosedError(PortalError):
+    """The portal session ended while something was still waiting on it.
+
+    The ``org.freedesktop.portal.Session`` interface emits ``Closed`` when
+    the compositor or the portal ends a session from its side -- a
+    compositor restart, the portal process dying, a session revoked from a
+    settings panel. Distinct from :class:`PortalTimeoutError` (the session
+    is fine, the signal just has not come) and from
+    :class:`PortalDeniedError` (a request was answered, negatively): here
+    there is no session left to answer anything, so the wait that raised
+    this can never be satisfied by waiting longer.
+    """
+
+    def __init__(self, step: str) -> None:
+        """Name what was being waited for when the session went away."""
+        super().__init__(
+            f"the portal session was closed while waiting for {step}; "
+            "the compositor or portal ended it from its side"
+        )
+        self.step = step
+
+
 def _gio() -> tuple[Any, Any] | None:
     """Import Gio and GLib, or return None.
 
@@ -1038,6 +1060,27 @@ def _wait_for_signal(
     loop = GLib.MainLoop()
     result: dict[str, Any] = {}
     timed_out = False
+    session_closed = False
+
+    def on_closed(*_args: Any) -> None:
+        """End the wait: a closed session can never deliver the signal.
+
+        ``Closed`` is emitted on the **session object's own path** (unlike
+        ``Activated``/``Deactivated``, which fire on the portal object --
+        see above), so the subscription below uses ``session_handle`` as
+        the path and needs no payload filtering: any ``Closed`` there is
+        this session's. Without this subscription, a wait with
+        ``timeout=None`` on a session the compositor has ended -- a
+        compositor restart, the portal dying, capture revoked from a
+        settings panel -- blocked forever, indistinguishable from a signal
+        that merely had not fired yet.
+        """
+        nonlocal session_closed
+        if result:
+            return
+        logger.debug("session %s closed while waiting for %s", session_handle, signal)
+        session_closed = True
+        loop.quit()
 
     def on_signal(
         _conn: Any,
@@ -1086,6 +1129,16 @@ def _wait_for_signal(
         on_signal,
         None,
     )
+    closed_subscription = connection.signal_subscribe(
+        busname,
+        _SESSION_INTERFACE,
+        "Closed",
+        session_handle,
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_closed,
+        None,
+    )
     logger.debug(
         "waiting up to %s for %s.%s on %s for session %s",
         "forever" if timeout is None else f"{timeout:g}s",
@@ -1095,7 +1148,7 @@ def _wait_for_signal(
         session_handle,
     )
     try:
-        if not result:
+        if not result and not session_closed:
             timeout_source = None
             if timeout is not None:
                 timeout_source = GLib.timeout_add(int(timeout * 1000), on_timeout)
@@ -1115,6 +1168,9 @@ def _wait_for_signal(
                     GLib.source_remove(timeout_source)
     finally:
         connection.signal_unsubscribe(subscription)
+        connection.signal_unsubscribe(closed_subscription)
+    if session_closed:
+        raise PortalSessionClosedError(signal)
     if timed_out:
         # timed_out is only ever set inside on_timeout, itself only ever
         # registered when timeout is not None -- so this always holds, but

@@ -8,6 +8,12 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly, for the libei-floor job below: the declared 1.0.0 floor is
+    # otherwise a claim nothing executes, since no distro CI runs ships a
+    # libei that old. Monday morning, so a break is found at the start of a
+    # week rather than during a release.
+    - cron: "0 5 * * 1"
 
 jobs:
   test:
@@ -82,6 +88,72 @@ jobs:
               assert mod.is_available() is False, f"{mod.__name__} unexpectedly available"
           print("import-safe with no native libraries")
           PY
+
+  # The README declares "libei 1.0.0 or newer"; development tracks 1.6.x and
+  # the `test` job above runs Ubuntu's 1.2.1 -- which leaves 1.0.x and 1.1.x
+  # as a floor nothing has executed since it was declared. This builds those
+  # exact releases from source and runs the suite against them: the
+  # version-gated tests must *skip* (that is their whole mechanism firing for
+  # real), and everything else must pass. Weekly and on dispatch, not per
+  # push -- a from-source meson build is minutes of work and the floor only
+  # moves when a release changes it. Deliberately NOT in `publish`'s needs:
+  # a job that does not run on tag pushes would leave publish waiting on a
+  # skip.
+  libei-floor:
+    name: declared floor (libei ${{ matrix.libei }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        libei: ["1.0.0", "1.1.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # What libei's own meson build needs: jinja2/attrs generate the
+      # protocol code, libevdev and libsystemd (sd-bus, for liboeffis) are
+      # its two library dependencies. Documentation is switched off rather
+      # than left on auto so a runner image that happens to carry doxygen
+      # does not turn this into a docs build.
+      - name: Install the libei build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config gcc libevdev-dev libsystemd-dev \
+            python3-jinja2 python3-attr
+
+      - name: Build and install libei ${{ matrix.libei }} from source
+        run: |
+          set -eu
+          git clone --depth 1 --branch "${{ matrix.libei }}" \
+            https://gitlab.freedesktop.org/libinput/libei.git /tmp/libei
+          cd /tmp/libei
+          # Options verified against 1.0.0's own meson_options.txt:
+          # documentation is an array (default []), tests a feature whose
+          # auto would pull the munit subproject this job has no use for.
+          meson setup build --prefix=/usr/local -Ddocumentation=[] -Dtests=disabled
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - run: pip install -e '.[dev]'
+
+      - name: The loader must find exactly the version just built
+        run: |
+          python - <<'PY'
+          from libei import ei, eis, oeffis
+          for mod in (ei, eis, oeffis):
+              print(f"{mod.__name__}: {mod.is_available()}")
+          assert ei.is_available() and eis.is_available(), "the built libei was not found"
+          PY
+
+      # -rs for the same reason as the `test` job: on a floor build the
+      # version-gated tests skipping is the finding, and the log should name
+      # every one of them.
+      - run: python -m pytest -q -rs
 
   build:
     runs-on: ubuntu-latest

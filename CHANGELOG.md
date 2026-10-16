@@ -7,6 +7,40 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
+### Added
+
+- **A portal session closed from the compositor's side now ends a wait
+  instead of hanging it.** `InputCaptureSession.wait_for_activation()` and
+  `wait_for_deactivation()` subscribe to the session object's own
+  `org.freedesktop.portal.Session::Closed` signal alongside the signal they
+  wait for, and raise the new typed `PortalSessionClosedError` when it
+  fires — naming what was being waited for. Before this, a wait with
+  `timeout=None` on a session the compositor or portal had ended (a
+  compositor restart, the portal process dying, capture revoked from a
+  settings panel) blocked forever, indistinguishable from a pointer barrier
+  nobody had crossed yet. Note `Closed` really is emitted on the session's
+  own object path — the opposite of `Activated`/`Deactivated`, which fire
+  on the portal object.
+- **A weekly CI job builds libei 1.0.0 and 1.1.0 from source and runs the
+  suite against them.** The README's "libei 1.0.0 or newer" floor was a
+  claim nothing executed — development tracks 1.6.x and CI's Ubuntu ships
+  1.2.1 — so the declared floor now runs for real, with the version-gated
+  tests skipping loudly as designed.
+
+### Fixed
+
+- **The ABI tests misread upstream's prerelease version numbers.** Debian 13
+  ships libei 1.3.901 — a snapshot on the way to 1.4 that already exports
+  the 1.4 symbols — and the "marked functions really are absent from a
+  library that predates them" pin read 1.3.901 as predating every 1.4
+  marker, failing on a library whose only sin was being packaged mid-cycle.
+  A micro of 900 or more is now normalized to the next minor, matching what
+  such a library actually contains. Found by running the suite across eight
+  live machines; the binding itself was never wrong, only the test's
+  reading of the version.
+
 ## [0.6.1] - 2026-10-01
 
 ### Changed

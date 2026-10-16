@@ -97,7 +97,15 @@ def _declared(prefix: str) -> dict[str, tuple[tuple[type, ...], type | None]]:
 
 
 def _installed_version(soname: str) -> tuple[int, ...] | None:
-    """The version in the loaded library's file name (``libei.so.1.6.0``)."""
+    """The version in the loaded library's file name (``libei.so.1.6.0``).
+
+    A micro of 900 or more is upstream's prerelease numbering for the *next*
+    minor -- Debian 13 ships 1.3.901, a snapshot on the way to 1.4 that
+    already exports the 1.4 symbols -- so it is normalized to that next
+    minor. Read literally, 1.3.901 "predates" every 1.4 marker while
+    carrying everything they mark, which failed the absent-function pin
+    below on a library whose only sin was being packaged mid-cycle.
+    """
     try:
         maps = Path("/proc/self/maps").read_text()
     except OSError:
@@ -106,7 +114,10 @@ def _installed_version(soname: str) -> tuple[int, ...] | None:
     for line in maps.splitlines():
         found = re.search(rf"/{re.escape(stem)}\.so\.(\d+\.\d+\.\d+)$", line)
         if found:
-            return _version(found.group(1))
+            major, minor, micro = _version(found.group(1))
+            if micro >= 900:
+                return (major, minor + 1, 0)
+            return (major, minor, micro)
     return None
 
 
