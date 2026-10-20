@@ -87,15 +87,18 @@ import each from the module that raises it.
 | `libei.portal` | `PortalVersionError` | The RemoteDesktop portal is too old to offer `ConnectToEIS` |
 | `libei.portal` | `PortalTimeoutError` | A step was accepted and never answered. Carries `.step` and `.timeout` |
 | `libei.portal` | `PortalDeniedError` | `CreateSession`, `SelectDevices` or `Start` came back non-zero — an explicit decline, or any other code the spec does not distinguish from one. Carries `.step` and `.message` |
+| `libei.portal` | `PortalSessionClosedError` | The session was ended from the compositor's side while a wait was outstanding — a restart, the portal dying, capture revoked from a settings panel. Carries `.step` |
+| `libei.portal` | `PortalProtocolError` | A portal signal's payload does not match the spec — either the `(session_handle, options)` shape or a value inside it (`activation_id`, `cursor_position`, `barrier_id`). Carries `.step`, `.payload`, and `.detail` (`None` for a shape fault, a phrase naming the field for a value fault) |
 | `libei.ei`, `libei.eis`, `libei.oeffis` | `LibraryNotFoundError` | The native library is missing or too old to export the function being called. A `RuntimeError`, and raised at the first *call* — see below |
 
 Which of those to catch depends on the families, because they do not nest under
 a single base:
 
-- **`except PortalError`** covers `PortalVersionError`, `PortalTimeoutError`
-  and `PortalDeniedError`. `PortalTimeoutError` is the one to think about before
-  treating it as a failure: the call is still outstanding, and by far the most
-  common cause is a consent dialog a user has not answered yet.
+- **`except PortalError`** covers `PortalVersionError`, `PortalTimeoutError`,
+  `PortalDeniedError`, `PortalSessionClosedError` and `PortalProtocolError`.
+  `PortalTimeoutError` is the one to think about before treating it as a
+  failure: the call is still outstanding, and by far the most common cause is a
+  consent dialog a user has not answered yet.
 - **`except DisconnectedError`** covers `SessionClosedError` too. That one is
   not an error in libei's view — the session ended normally — which is why it
   has its own class rather than reusing its base.

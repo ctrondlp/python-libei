@@ -84,6 +84,8 @@ class FakeInputCaptureConnection:
         pending_deactivated: dict[str, Any] | None = None,
         signal_session_handle: str | None = None,
         pending_closed: bool = False,
+        pending_activated_raw: tuple[Any, ...] | None = None,
+        pending_deactivated_raw: tuple[Any, ...] | None = None,
     ) -> None:
         self.session_handle = session_handle
         self.signal_session_handle = signal_session_handle or session_handle
@@ -107,6 +109,12 @@ class FakeInputCaptureConnection:
         self._pending_activated = pending_activated
         self._pending_deactivated = pending_deactivated
         self._pending_closed = pending_closed
+        # Delivered VERBATIM as the signal's whole parameter tuple, unlike
+        # pending_activated, which is an options dict the fake wraps in the
+        # correct (session_handle, options) shape -- this is how a test
+        # hands the waiter a payload a spec-conforming portal cannot send.
+        self._pending_activated_raw = pending_activated_raw
+        self._pending_deactivated_raw = pending_deactivated_raw
         # A permanent log, unlike _subscriptions: signal_unsubscribe removes
         # an entry from that (correctly -- see its own docstring), so a test
         # checking *what was subscribed to* after the fact needs a record
@@ -178,10 +186,20 @@ class FakeInputCaptureConnection:
                 self._pending_reply = None
                 _path, code, results = pending
                 callback(None, None, path, None, "Response", FakeReply((code, results)))
+        elif signal == "Activated" and self._pending_activated_raw is not None:
+            raw = self._pending_activated_raw
+            self._pending_activated_raw = None
+            callback(None, None, portal._OBJECT_PATH, None, "Activated", FakeReply(raw))
         elif signal == "Activated" and self._pending_activated is not None:
             payload = self._pending_activated
             self._pending_activated = None
             self._emit_session_signal(callback, "Activated", payload)
+        elif signal == "Deactivated" and self._pending_deactivated_raw is not None:
+            raw = self._pending_deactivated_raw
+            self._pending_deactivated_raw = None
+            callback(
+                None, None, portal._OBJECT_PATH, None, "Deactivated", FakeReply(raw)
+            )
         elif signal == "Deactivated" and self._pending_deactivated is not None:
             payload = self._pending_deactivated
             self._pending_deactivated = None
@@ -564,6 +582,166 @@ def test_wait_for_activation_tolerates_a_missing_barrier_id() -> None:
         session = portal.InputCaptureSession.negotiate(connection=connection)
         activation = session.wait_for_activation(timeout=1.0)
     assert activation.barrier_id is None
+
+
+def test_a_malformed_activated_payload_raises_a_typed_error() -> None:
+    # An empty payload cannot even be matched to a session, so it is broken
+    # for every possible waiter. Before the shape checks this was an
+    # IndexError *inside* the GLib callback -- which PyGI prints and
+    # swallows, so the wait hung (timeout=None) or timed out, both
+    # indistinguishable from a compositor that never fired.
+    connection = FakeInputCaptureConnection(pending_activated_raw=())
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.wait_for_activation(timeout=1.0)
+    # `.step` is the attribute every sibling portal error raised from the
+    # same call site carries, so a caller that catches PortalError and reads
+    # `.step` works for this one too (PortalTimeoutError/SessionClosedError).
+    assert excinfo.value.step == "Activated"
+    assert excinfo.value.payload == ()
+    # A shape fault, so no value-level detail.
+    assert excinfo.value.detail is None
+
+
+def test_a_malformed_deactivated_payload_raises_a_typed_error() -> None:
+    # Same shape check, the other signal: wait_for_deactivation goes through
+    # the identical _wait_for_signal, and nothing else exercises its
+    # malformed branch (the timeout/closed paths test both signals, so this
+    # one should too).
+    connection = FakeInputCaptureConnection(pending_deactivated_raw=("/session/1",))
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.wait_for_deactivation(timeout=1.0)
+    assert excinfo.value.step == "Deactivated"
+    assert excinfo.value.payload == ("/session/1",)
+
+
+def test_a_non_integer_activation_id_raises_a_typed_error() -> None:
+    # Shape-valid payload (a dict), but activation_id is not the `u` the
+    # spec promises -- this passes _wait_for_signal's shape check and used
+    # to crash the caller with ValueError on int(). It is now the same
+    # typed error as a shape violation, and carries a value-level detail so
+    # its message does not misdiagnose a correct shape.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": "not-a-number"}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.wait_for_activation(timeout=1.0)
+    assert excinfo.value.step == "Activated"
+    assert excinfo.value.detail is not None
+    assert "shape" not in str(excinfo.value)
+
+
+def test_a_non_iterable_cursor_position_raises_a_typed_error() -> None:
+    # cursor_position is `(dd)`; a scalar here would crash the caller with
+    # TypeError unpacking it. Guarded into PortalProtocolError too.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 1, "cursor_position": 5}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
+def test_a_wrong_arity_cursor_position_raises_a_typed_error() -> None:
+    # (dd) is exactly two: tuple("ab") would not raise, so the old guard let
+    # a wrong-arity or stringly-typed cursor through as a bad Activation.
+    # The explicit two-element unpack rejects it.
+    for bad in ("ab", (1.0,), (1.0, 2.0, 3.0)):
+        connection = FakeInputCaptureConnection(
+            pending_activated={"activation_id": 1, "cursor_position": bad}
+        )
+        with install_fake_gi(connection):
+            session = portal.InputCaptureSession.negotiate(connection=connection)
+            with pytest.raises(portal.PortalProtocolError):
+                session.wait_for_activation(timeout=1.0)
+
+
+def test_a_non_numeric_cursor_component_raises_a_typed_error() -> None:
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 1, "cursor_position": ("x", "y")}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
+def test_a_non_integer_barrier_id_raises_a_typed_error() -> None:
+    # barrier_id is a `u` the caller compares against the ids it armed; a
+    # string here used to pass straight through into a type-violating
+    # Activation that mismatched silently or crashed on arithmetic later.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 1, "barrier_id": "b-3"}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
+def test_an_infinite_activation_id_raises_a_typed_error() -> None:
+    # int(float('inf')) raises OverflowError, which the old (ValueError,
+    # TypeError) guard missed -- it would have escaped a caller's
+    # `except PortalError`.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": float("inf")}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
+def test_a_non_integer_deactivation_id_raises_a_typed_error() -> None:
+    connection = FakeInputCaptureConnection(
+        pending_deactivated={"activation_id": "not-a-number"}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.wait_for_deactivation(timeout=1.0)
+    assert excinfo.value.step == "Deactivated"
+
+
+def test_an_options_payload_that_is_not_a_dict_raises_a_typed_error() -> None:
+    # The right session's signal, but options is not the a{sv} the spec
+    # promises -- before the shape checks this surfaced wherever the caller
+    # happened to poke the payload (an AttributeError on .get here).
+    connection = FakeInputCaptureConnection(pending_activated_raw=("/session/1", 42))
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.wait_for_activation(timeout=1.0)
+    assert "Activated" in str(excinfo.value)
+    assert excinfo.value.payload == ("/session/1", 42)
+
+
+def test_a_non_string_session_handle_raises_a_typed_error() -> None:
+    connection = FakeInputCaptureConnection(pending_activated_raw=(7, {}))
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
+def test_a_payload_with_an_extra_trailing_field_raises_a_typed_error() -> None:
+    # The right session and a valid options dict, but a third field the
+    # spec's (o, a{sv}) shape has no room for -- pins the `len(args) != 2`
+    # clause on its own, which the not-a-dict case above does not reach.
+    connection = FakeInputCaptureConnection(
+        pending_activated_raw=("/session/1", {}, "extra")
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.wait_for_activation(timeout=1.0)
+    assert excinfo.value.payload == ("/session/1", {}, "extra")
 
 
 def test_wait_for_activation_times_out_with_no_signal() -> None:

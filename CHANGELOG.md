@@ -7,6 +7,36 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A malformed portal signal payload now raises the new typed
+  `PortalProtocolError` instead of hanging or crashing the caller.** Every
+  signal `wait_for_activation()` and `wait_for_deactivation()` wait on is
+  specified as `(o session_handle, a{sv} options)`, and that shape used to
+  be unpacked on faith, failing differently depending on how it was wrong:
+  an empty tuple raised `IndexError` inside the GLib signal callback — where
+  PyGI prints the traceback to stderr and swallows it, so the loop kept
+  running and the wait hung (unboundedly, with `timeout=None`), the worst
+  case because it was invisible; a wrong-length tuple or a non-dict options
+  value instead slipped through to the caller and crashed it with
+  `ValueError`/`AttributeError`. The shape is now checked in one place and
+  any mismatch ends the wait with `PortalProtocolError`, naming the signal
+  and the payload that arrived. The value level is covered too: every field
+  the spec types — `activation_id` (`u`), `cursor_position` (`(dd)`, now
+  checked for exactly two numeric components rather than any iterable),
+  `barrier_id` (`u`) — is converted under one guard, so a non-conforming
+  value in any of them raises the same typed error (including the
+  `OverflowError` an infinite `activation_id` would otherwise throw past an
+  `except PortalError`) rather than crashing the caller later doing
+  arithmetic on a string. One `except PortalProtocolError` therefore covers
+  every way a non-conforming portal can malform one of these signals. The
+  error carries `.step` (the signal name, the attribute every sibling
+  portal error uses), `.payload`, and `.detail` (`None` for a shape fault,
+  a phrase naming the field for a value fault). Signals and the wait's
+  deadline or a session close that become ready in the same GLib
+  main-context iteration now resolve to whichever outcome was recorded
+  first, rather than a delivered activation being dropped for a timeout.
+
 ## [0.7.0] - 2026-10-16
 
 ### Added

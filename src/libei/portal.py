@@ -90,6 +90,8 @@ __all__ = [
     "PortalVersionError",
     "PortalDeniedError",
     "PortalTimeoutError",
+    "PortalSessionClosedError",
+    "PortalProtocolError",
     "RemoteDesktopSession",
     "Activation",
     "InputCaptureSession",
@@ -183,6 +185,45 @@ class PortalDeniedError(PortalError):
         super().__init__(message or f"{step} was not approved")
         self.step = step
         self.message = message
+
+
+class PortalProtocolError(PortalError):
+    """A portal signal arrived with a payload that does not match the spec.
+
+    Every signal :func:`_wait_for_signal` waits on is specified as
+    ``(o session_handle, a{sv} options)``, and two kinds of mismatch used
+    to fail in two different, equally unhelpful ways. The *shape* being
+    wrong -- an empty tuple, a non-string handle, a wrong-length tuple, a
+    non-dict options -- either raised ``IndexError`` *inside* the GLib
+    signal callback, where PyGI prints the traceback to stderr and
+    swallows it so the wait hung invisibly (unboundedly, with
+    ``timeout=None``), or slipped through to the caller and crashed it with
+    ``ValueError``/``AttributeError``. A *value* inside a correctly-shaped
+    options being wrong -- an ``activation_id`` that is not an integer, a
+    ``cursor_position`` that is not two numbers -- crashed the caller later
+    still, doing arithmetic on it. Both now end the wait with this error.
+
+    ``detail`` distinguishes the two: ``None`` for a shape fault (the
+    default message names the expected shape), a phrase for a value fault
+    (naming the field). ``payload`` is whatever best shows the fault -- the
+    whole signal tuple for a shape fault, the options dict for a value one.
+    """
+
+    def __init__(self, step: str, payload: object, detail: str | None = None) -> None:
+        """Name the signal, what arrived, and -- for a value fault -- which."""
+        reason = detail or (
+            "the portal spec gives it the shape (session_handle, options dict)"
+        )
+        super().__init__(
+            f"{step} arrived with a malformed payload: {reason}, got {payload!r}"
+        )
+        # `step` mirrors the attribute every sibling portal error raised
+        # from the same `_wait_for_signal` call site carries
+        # (PortalTimeoutError, PortalSessionClosedError), so a caller that
+        # catches PortalError and reads `.step` works across all of them.
+        self.step = step
+        self.payload = payload
+        self.detail = detail
 
 
 class PortalSessionClosedError(PortalError):
@@ -1021,6 +1062,88 @@ def _create_input_capture_session_v1(
     return session_handle
 
 
+def _classify_signal_payload(
+    args: tuple[Any, ...], session_handle: str, signal: str
+) -> str:
+    """How `_wait_for_signal` should treat one unpacked signal payload.
+
+    ``"take"`` -- it is this session's, correctly shaped, record it.
+    ``"drop"`` -- another session's; keep waiting (logged, since a dropped
+    signal is otherwise indistinguishable from one that never fired).
+    ``"malformed"`` -- not the ``(o session_handle, a{sv} options)`` shape
+    the spec gives every signal here; the session filter runs *between* the
+    two shape checks on purpose, so a malformed payload for another session
+    is still dropped rather than raised in this waiter.
+    """
+    if not args or not isinstance(args[0], str):
+        return "malformed"
+    if args[0] != session_handle:
+        logger.debug(
+            "ignoring %s for session %s while waiting for %s",
+            signal,
+            args[0],
+            session_handle,
+        )
+        return "drop"
+    if len(args) != 2 or not isinstance(args[1], dict):
+        return "malformed"
+    return "take"
+
+
+def _deactivation_id(options: dict[str, Any], signal: str) -> int:
+    """The ``activation_id`` from Deactivated's options, as the spec's ``u``.
+
+    ``_wait_for_signal`` checks the payload's *shape* -- that options is a
+    dict -- but not the types of the values in it. ``activation_id`` is a
+    ``u``, and a non-conforming portal that put something else there would
+    crash the caller with ``ValueError``/``TypeError``/``OverflowError``
+    (the last from ``int(float('inf'))``) past the shape check. Converting
+    it here turns that into the same typed :class:`PortalProtocolError` the
+    shape check raises, so a caller that guards against malformed signals
+    catches one error, not two.
+    """
+    try:
+        return int(options.get("activation_id", 0))
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise PortalProtocolError(
+            signal, options, "activation_id is not an integer"
+        ) from exc
+
+
+def _activation_from_options(options: dict[str, Any], signal: str) -> Activation:
+    """Build an :class:`Activation` from Activated's options, spec-typed.
+
+    The companion to the shape check in ``_wait_for_signal`` for the value
+    level: every field the portal spec types is converted here under one
+    guard, so a non-conforming value in any of them -- an ``activation_id``
+    that is not a ``u``, a ``cursor_position`` that is not two ``d``s, a
+    ``barrier_id`` that is not a ``u`` -- becomes the same typed
+    :class:`PortalProtocolError` rather than a crash in the caller later,
+    doing arithmetic on a string. One guard rather than three means the
+    next field added to the signal is validated by construction, not by a
+    fourth hand-rolled check nobody remembers to write.
+    """
+    try:
+        activation_id = int(options.get("activation_id", 0))
+        cursor = options.get("cursor_position")
+        if cursor is None:
+            cursor_position = None
+        else:
+            cx, cy = cursor  # (dd): exactly two, or this unpacking raises
+            cursor_position = (float(cx), float(cy))
+        barrier = options.get("barrier_id")
+        barrier_id = None if barrier is None else int(barrier)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise PortalProtocolError(
+            signal, options, "an option value is not the type the spec gives it"
+        ) from exc
+    return Activation(
+        activation_id=activation_id,
+        cursor_position=cursor_position,
+        barrier_id=barrier_id,
+    )
+
+
 def _wait_for_signal(
     connection: Any,
     Gio: Any,
@@ -1056,11 +1179,30 @@ def _wait_for_signal(
     D-Bus specification restricts plain ``arg0=`` match rules to arguments
     of type STRING, and this one is an OBJECT_PATH, which is the same shape
     of silent non-delivery all over again.
+
+    A payload that does not match the spec's ``(o session_handle, a{sv}
+    options)`` shape raises :class:`PortalProtocolError` rather than being
+    unpacked on faith -- see that class for why the alternative was not an
+    exception but a hang.
     """
     loop = GLib.MainLoop()
     result: dict[str, Any] = {}
+    malformed: dict[str, Any] = {}
     timed_out = False
     session_closed = False
+
+    def _settled() -> bool:
+        """Whether some terminal outcome has already been recorded.
+
+        GLib dispatches every source ready in one main-context iteration,
+        regardless of an earlier ``loop.quit()``, so two outcomes -- a
+        signal and the timeout, a signal and Closed -- can both fire in the
+        same poll. Every callback checks this first so the *first* recorded
+        outcome wins and the post-loop raise order is never handed a second
+        one to misreport (a delivered activation dropped for a timeout, a
+        protocol fault overwritten by session-closed).
+        """
+        return bool(result) or bool(malformed) or timed_out or session_closed
 
     def on_closed(*_args: Any) -> None:
         """End the wait: a closed session can never deliver the signal.
@@ -1076,7 +1218,7 @@ def _wait_for_signal(
         that merely had not fired yet.
         """
         nonlocal session_closed
-        if result:
+        if _settled():
             return
         logger.debug("session %s closed while waiting for %s", session_handle, signal)
         session_closed = True
@@ -1092,21 +1234,22 @@ def _wait_for_signal(
         *_a: Any,
     ) -> None:
         """Record the first matching signal; anything else is logged and dropped."""
-        if result:  # a subscription that outlives its own wait can fire twice
+        if _settled():  # a subscription outliving its wait fires twice
             return
         args = params.unpack()
-        if args[0] != session_handle:
-            # Logged, not silently dropped: this filter can hide a signal
-            # that *did* arrive just as effectively as the wrong-path
-            # subscription above did, and the two are indistinguishable
-            # from the outside -- both look exactly like a compositor that
-            # never fired. One debug line is what tells them apart.
-            logger.debug(
-                "ignoring %s for session %s while waiting for %s",
-                signal,
-                args[0],
-                session_handle,
-            )
+        # The verdict is computed by `_classify_signal_payload`, but ACTED
+        # on here and the error raised only after the loop, because this
+        # runs inside a GLib callback: PyGI prints an exception raised here
+        # to stderr and swallows it, so a bare raise on a malformed payload
+        # would leave the loop running -- a timeout at best, an unbounded
+        # hang with timeout=None, both indistinguishable from a compositor
+        # that never fired.
+        verdict = _classify_signal_payload(args, session_handle, signal)
+        if verdict == "drop":
+            return
+        if verdict == "malformed":
+            malformed["args"] = args
+            loop.quit()
             return
         logger.debug("received %s for session %s", signal, session_handle)
         result["args"] = args
@@ -1115,6 +1258,11 @@ def _wait_for_signal(
     def on_timeout() -> bool:
         """Stop the loop and record that it timed out rather than finished."""
         nonlocal timed_out
+        if _settled():
+            # A signal delivered in the same poll as the deadline has
+            # already recorded its outcome; the timeout must not overwrite
+            # a real activation with PortalTimeoutError.
+            return False
         timed_out = True
         loop.quit()
         return False
@@ -1148,7 +1296,7 @@ def _wait_for_signal(
         session_handle,
     )
     try:
-        if not result and not session_closed:
+        if not result and not session_closed and not malformed:
             timeout_source = None
             if timeout is not None:
                 timeout_source = GLib.timeout_add(int(timeout * 1000), on_timeout)
@@ -1169,8 +1317,31 @@ def _wait_for_signal(
     finally:
         connection.signal_unsubscribe(subscription)
         connection.signal_unsubscribe(closed_subscription)
+    return _signal_outcome(
+        signal, timeout, result, malformed, timed_out, session_closed
+    )
+
+
+def _signal_outcome(
+    signal: str,
+    timeout: float | None,
+    result: dict[str, Any],
+    malformed: dict[str, Any],
+    timed_out: bool,
+    session_closed: bool,
+) -> tuple[Any, ...]:
+    """Raise for the terminal outcome `_wait_for_signal` recorded, or return it.
+
+    Order is load-bearing and matches the callbacks' `_settled` guard:
+    whichever outcome was recorded first is the only one set, so this order
+    only ever decides between genuinely simultaneous dispatches, where a
+    session that has closed or a payload that was malformed is the more
+    useful answer than "timed out".
+    """
     if session_closed:
         raise PortalSessionClosedError(signal)
+    if malformed:
+        raise PortalProtocolError(signal, malformed["args"])
     if timed_out:
         # timed_out is only ever set inside on_timeout, itself only ever
         # registered when timeout is not None -- so this always holds, but
@@ -1497,12 +1668,7 @@ class InputCaptureSession:
             self.session_handle,
             timeout,
         )
-        cursor = options.get("cursor_position")
-        return Activation(
-            activation_id=int(options.get("activation_id", 0)),
-            cursor_position=tuple(cursor) if cursor is not None else None,
-            barrier_id=options.get("barrier_id"),
-        )
+        return _activation_from_options(options, "Activated")
 
     def wait_for_deactivation(self, timeout: float | None = None) -> int:
         """Block until the current capture ends, returning its activation_id."""
@@ -1520,7 +1686,7 @@ class InputCaptureSession:
             self.session_handle,
             timeout,
         )
-        return int(options.get("activation_id", 0))
+        return _deactivation_id(options, "Deactivated")
 
     def close(self) -> None:
         """End the portal session, and close the EIS fd if unclaimed.
