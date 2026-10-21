@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-libei"
-version = "0.7.0"
+version = "0.8.0"
 description = "Inject, receive and capture input on Wayland from Python: ctypes bindings for libei, libeis and liboeffis, plus the RemoteDesktop and InputCapture portals"
 readme = "README.md"
 license = "MIT"

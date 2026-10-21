@@ -32,6 +32,7 @@ import pytest
 from libei import portal
 from test_portal import (
     FakeGLibError,
+    FakeMainLoop,
     FakeReply,
     FakeUnixFDList,
     FakeVariant,
@@ -773,6 +774,44 @@ def test_wait_for_activation_does_not_double_remove_the_timeout_source_on_timeou
         with mock.patch.object(glib, "source_remove") as source_remove:
             with pytest.raises(portal.PortalTimeoutError):
                 session.wait_for_activation(timeout=0.01)
+    source_remove.assert_not_called()
+
+
+def test_a_signal_and_the_deadline_in_one_poll_do_not_double_remove_the_source() -> (
+    None
+):
+    # The harder half of the same bug: GLib dispatches every source ready in
+    # one iteration, so a real Activated can land in the *same poll* as the
+    # timeout deadline. on_signal records the activation and quits; on_timeout
+    # still runs, sees the wait already settled, and returns False -- which
+    # GLib treats as "remove this source". The finally block must not remove
+    # it a second time. Keyed on `timed_out` (which this early return leaves
+    # False) rather than on "did on_timeout fire", it did -- tripping the
+    # "Source ID N was not found" critical that is fatal under
+    # G_DEBUG=fatal-criticals. The fake delivers the signal in the same run()
+    # as the timeout via inject_before_timeout to model the race.
+    connection = FakeInputCaptureConnection()  # nothing fires on subscribe
+
+    def deliver_activation() -> None:
+        key = (portal._INPUT_CAPTURE, "Activated", portal._OBJECT_PATH)
+        connection._subscriptions[key](
+            None,
+            None,
+            portal._OBJECT_PATH,
+            None,
+            "Activated",
+            FakeReply((connection.session_handle, {"activation_id": 7})),
+        )
+
+    with install_fake_gi(connection):
+        glib = sys.modules["gi.repository.GLib"]
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        FakeMainLoop.inject_before_timeout = deliver_activation
+        with mock.patch.object(glib, "source_remove") as source_remove:
+            activation = session.wait_for_activation(timeout=5.0)
+    # The delivered signal wins -- not a timeout -- and the source the firing
+    # on_timeout already removed is not removed again.
+    assert activation.activation_id == 7
     source_remove.assert_not_called()
 
 

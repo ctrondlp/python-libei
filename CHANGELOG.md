@@ -7,6 +7,8 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-20
+
 ### Added
 
 - **A malformed portal signal payload now raises the new typed

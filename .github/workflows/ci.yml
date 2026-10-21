@@ -118,12 +118,22 @@ jobs:
       # its two library dependencies. Documentation is switched off rather
       # than left on auto so a runner image that happens to carry doxygen
       # does not turn this into a docs build.
+      #
+      # jinja2/attrs go in through BOTH apt and pip on purpose. `meson setup`
+      # resolves `python3` from PATH, where actions/setup-python has placed
+      # its own 3.12 ahead of the system one, so it is that interpreter --
+      # not the system python3 the apt packages land in -- that must carry
+      # the modules, or the proto generation fails with "python3 is missing
+      # modules: attr, jinja2". The pip line installs into the setup-python;
+      # the apt line stays as the belt-and-braces for a meson that finds the
+      # system interpreter instead.
       - name: Install the libei build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config gcc libevdev-dev libsystemd-dev \
             python3-jinja2 python3-attr
+          python -m pip install attrs jinja2
 
       - name: Build and install libei ${{ matrix.libei }} from source
         run: |

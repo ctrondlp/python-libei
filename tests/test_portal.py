@@ -112,6 +112,11 @@ class FakeMainLoop:
     # What GLib.timeout_add was asked to wait, so a test can check the
     # Response leg got only the time the call leg left of the deadline.
     pending_timeout_msec: int | None = None
+    # A callable a test can set to model real GLib dispatching several
+    # sources ready in one iteration: it runs just before the stashed
+    # timeout callback, so a signal it delivers and the timeout both fire in
+    # the same `run()`. Left None, `run()` behaves exactly as before.
+    inject_before_timeout: Any = None
 
     def __init__(self) -> None:
         self._quit = False
@@ -122,6 +127,10 @@ class FakeMainLoop:
         callback = FakeMainLoop.pending_timeout
         if callback is not None:
             FakeMainLoop.pending_timeout = None
+            inject = FakeMainLoop.inject_before_timeout
+            if inject is not None:
+                FakeMainLoop.inject_before_timeout = None
+                inject()
             callback()
             return
         raise AssertionError("run() called before a synchronous quit()")
@@ -296,6 +305,8 @@ def install_fake_gi(connection: Any = None) -> Any:
 
     # timeout_add stashes the callback rather than scheduling it; only the
     # timeout tests, which never quit() the loop, actually let it fire.
+    FakeMainLoop.inject_before_timeout = None
+
     def timeout_add(ms: int, callback: Any) -> int:
         FakeMainLoop.pending_timeout = callback
         FakeMainLoop.pending_timeout_msec = ms
