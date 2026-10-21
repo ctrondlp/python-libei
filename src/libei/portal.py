@@ -1071,9 +1071,19 @@ def _classify_signal_payload(
     ``"drop"`` -- another session's; keep waiting (logged, since a dropped
     signal is otherwise indistinguishable from one that never fired).
     ``"malformed"`` -- not the ``(o session_handle, a{sv} options)`` shape
-    the spec gives every signal here; the session filter runs *between* the
-    two shape checks on purpose, so a malformed payload for another session
-    is still dropped rather than raised in this waiter.
+    the spec gives every signal here.
+
+    Two shape checks with the session filter between them, so how a
+    malformed payload is treated depends on how it is broken. A payload
+    whose *options* are the wrong shape (the second check) is reached only
+    after the filter has matched its handle, so another session's is already
+    dropped before that check runs -- it is raised only for this session. A
+    payload with no first element, or one that is not a string, cannot be
+    matched to any session at all: there is no handle to compare it with, so
+    it is malformed for every possible waiter and is raised here whichever
+    session it might have been meant for -- the filter cannot run before it,
+    only after. In the single-session process this almost always is, the
+    distinction never arises.
     """
     if not args or not isinstance(args[0], str):
         return "malformed"
@@ -1189,6 +1199,16 @@ def _wait_for_signal(
     result: dict[str, Any] = {}
     malformed: dict[str, Any] = {}
     timed_out = False
+    # Distinct from `timed_out`: whether `on_timeout` ran at all, either
+    # path. `on_timeout` returns False whichever branch it takes, and False
+    # is what makes GLib deregister the source -- so the finally block must
+    # key its "already removed?" check on "did on_timeout fire", not on "did
+    # the wait time out". When a signal and the deadline land in the same
+    # poll, on_timeout takes the `_settled()` early return (leaving
+    # `timed_out` False) yet its False return still removed the source;
+    # keying on `timed_out` there would double-remove it and trip the very
+    # "Source ID N was not found" critical the guard exists to avoid.
+    timeout_fired = False
     session_closed = False
 
     def _settled() -> bool:
@@ -1257,7 +1277,11 @@ def _wait_for_signal(
 
     def on_timeout() -> bool:
         """Stop the loop and record that it timed out rather than finished."""
-        nonlocal timed_out
+        nonlocal timed_out, timeout_fired
+        # Set first, before the early return: GLib removes the source the
+        # moment this returns False (which both paths do), so the finally
+        # block keys "already removed" on this, not on `timed_out`.
+        timeout_fired = True
         if _settled():
             # A signal delivered in the same poll as the deadline has
             # already recorded its outcome; the timeout must not overwrite
@@ -1312,7 +1336,12 @@ def _wait_for_signal(
                 # every real timeout this session hit, never against
                 # test_portal.py's fake GLib.source_remove, which just
                 # clears pending_timeout with no complaint either way.
-                if timeout_source is not None and not timed_out:
+                # Keyed on `timeout_fired` (did on_timeout run), not
+                # `timed_out` (did the wait time out): a signal landing in
+                # the same poll as the deadline runs on_timeout down its
+                # `_settled` early return, which removes the source yet
+                # leaves `timed_out` False.
+                if timeout_source is not None and not timeout_fired:
                     GLib.source_remove(timeout_source)
     finally:
         connection.signal_unsubscribe(subscription)
