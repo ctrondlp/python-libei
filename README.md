@@ -188,7 +188,7 @@ Exactly what was run, when, and against which versions:
 
   | Needs | For |
   | --- | --- |
-  | 1.1 | `Region.mapping_id`, `Region.convert_point()`, `Device.region_at()` |
+  | 1.1 | `Region.mapping_id`, `Device.region_at()` |
   | 1.4 | ping/pong round trips (`Context.new_ping()`), `Context.disconnect()`, touch cancellation (`Touch.cancel()`) |
   | 1.5 | `eis.Client.pid` |
   | 1.6 | `Device.text_utf8()` / `text_keysym()` and TEXT events, `Seat.request_device()`, `Eis.set_flag()` |

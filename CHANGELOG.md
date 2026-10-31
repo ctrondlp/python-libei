@@ -22,7 +22,26 @@ All notable changes to python-libei are recorded here. The format follows
   negotiation rather than one test apiece, because the handshake is the
   expensive part and the values then have to agree within the same frame.
 
-## [0.8.0] - 2026-10-20
+  The absolute leg needed a region to be configured on the device. libei
+  1.0.0's `ei_device_pointer_motion_absolute` ends in
+  `if (!ei_device_in_region(device, x, y)) return;`, and with no region the
+  list it walks is empty, so the event was *silently* dropped -- no log, no
+  error, just an event that never arrived. Local libei 1.6 delivered it
+  anyway, which is why this only showed up on the CI runners' 1.0.x.
+
+### Fixed
+
+- **`ei_region_convert_point` was marked as needing libei 1.1, and does
+  not.** It is declared in libei 1.0.0's own public header and implemented
+  there; the marker put it alongside its genuine 1.1 neighbours
+  `ei_region_get_mapping_id` and `ei_device_region_at`. The weekly
+  declared-floor job is what caught it -- building libei 1.0.0 from source
+  found the symbol present where the marker promised it would be absent --
+  which is the job working as intended rather than a flake. The README's
+  version table no longer tells a reader on a 1.0.x build that
+  `Region.convert_point()` is out of reach, and every remaining marker was
+  swept against 1.0.0's real headers: 17 `ei_` and 18 `eis_` markers, none
+  of them contradicted.
 
 ### Added
 

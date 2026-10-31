@@ -199,7 +199,23 @@ def test_the_accessors_no_other_test_reaches_round_trip() -> None:
                 device_created = True
                 assert server_event.seat is not None
                 server_device = server_event.seat.new_device()
-                server_device.configure(name="accessor-device", capabilities=caps)
+                # The region is not decoration: absolute motion is defined
+                # *in the device's region*, so a device configured with
+                # POINTER_ABSOLUTE and no region has nowhere to put the
+                # point and libeis drops the event. Local libei 1.6 happened
+                # to deliver it anyway; the libei the CI runners install did
+                # not, and the stricter behaviour is the correct one to write
+                # against. (100, 200) sits inside this rectangle, and
+                # `mapping_id` is deliberately left unset -- it needs libei
+                # 1.1, which the declared-floor job does not have.
+                # No `size`: libeis refuses one on a VIRTUAL device
+                # ("Device type physical required for size"), and the region
+                # is what an absolute device actually needs.
+                server_device.configure(
+                    name="accessor-device",
+                    capabilities=caps,
+                    regions=(eis.ConfigureRegion(offset=(0, 0), size=(1920, 1080)),),
+                )
                 server_device.add()
                 server_device.resume()
                 seen["device_type"] = server_device.device_type
@@ -250,8 +266,12 @@ def test_the_accessors_no_other_test_reaches_round_trip() -> None:
     assert seen["modifiers"] == ei.XkbModifiersEvent(
         depressed=4, latched=0, locked=2, group=0
     )
-    # Not a fixed number: the device_type is whatever libeis assigns a device
-    # this package created, and the height is the configured region's or 0
-    # where none was configured. The binding being right is the claim.
+    # `height` is 0 here, and exactly 0 is the right assertion rather than a
+    # type check: it reports a *configured size*, which libeis accepts only
+    # on a PHYSICAL device, so a VIRTUAL one like this is unsized by
+    # definition. The region above does not change it -- a region is where
+    # the device maps to, not how big the device is. device_type is whatever
+    # libeis assigns a device this package created, so only its being a real
+    # member of the enum is claimed.
     assert seen["device_type"] in tuple(eis.DeviceType)
-    assert isinstance(seen["height"], int)
+    assert seen["height"] == 0
