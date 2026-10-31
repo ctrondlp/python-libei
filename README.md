@@ -188,17 +188,27 @@ Exactly what was run, when, and against which versions:
 
   | Needs | For |
   | --- | --- |
-  | 1.1 | `Region.mapping_id`, `Region.convert_point()`, `Device.region_at()` |
+  | 1.1 | `Region.mapping_id`, `Device.region_at()` |
   | 1.4 | ping/pong round trips (`Context.new_ping()`), `Context.disconnect()`, touch cancellation (`Touch.cancel()`) |
   | 1.5 | `eis.Client.pid` |
   | 1.6 | `Device.text_utf8()` / `text_keysym()` and TEXT events, `Seat.request_device()`, `Eis.set_flag()` |
 
   Nothing is resolved until it is called, so a build without one of these
   costs you only that call — it raises `LibraryNotFoundError` naming the
-  missing symbol, while the rest of the package keeps working. The one
-  exception is `Event.touch_up_event`, which degrades instead of raising:
-  on libei older than 1.4 it reports `is_cancel=False`, since a library
-  with no notion of cancellation genuinely never sends one.
+  missing symbol, while the rest of the package keeps working. Two
+  accessors degrade instead of raising, because every supported version
+  exports the symbol and only the answer changed — so there is nothing to
+  resolve and nothing to report:
+
+  - `Event.touch_up_event` reports `is_cancel=False` on libei older than
+    1.4, since a library with no notion of cancellation genuinely never
+    sends one.
+  - `eis.Event.emulating_sequence` reads 0 on libei older than 1.6
+    whatever the client sent: libeis queued the start_emulating event
+    without ever copying the sequence into it, until 1.6.0 added the
+    missing assignment. A 0 on an older build is indistinguishable from a
+    client that really sent 0. The client-side
+    `ei.Event.emulating_sequence` is unaffected.
 
   These versions were established by building libei 1.2.1 and diffing its
   exported symbols against every binding here, not by reading `@since`

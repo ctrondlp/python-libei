@@ -17,10 +17,32 @@ import time
 
 import pytest
 
-from conftest import requires_libei
+from conftest import has_symbol, requires_libei
 from libei import ei, eis
 
 pytestmark = [pytest.mark.integration, requires_libei]
+
+# What the client sends as its start_emulating sequence, and what the server
+# should read back for it. They are the same number only on libei 1.6+:
+# below that, libeis built the start_emulating event and never copied the
+# sequence into it, so the getter returned a zeroed struct field for every
+# client no matter what was sent. Upstream added the missing assignment in
+# libei commit 98cd152, released in 1.6.0 and in no earlier tag -- measured
+# 0 on 1.2.1, 1.3.901 and 1.5.0, 4242 on 1.6.0.
+#
+# `requires_symbol` cannot express this, which is why `has_symbol` exists:
+# every version from the 1.0.0 floor up exports
+# `eis_event_emulating_get_sequence`, the old ones just answer wrongly.
+# `eis_set_flag` is 1.6-only and stands in for the version -- and it is a
+# libeis symbol, so the library being asked is the one that answers.
+#
+# Decided here at import rather than in the test body both because that is
+# where the suite's other version gates live, and because a branch down in
+# that already-long negotiation costs more than it is worth.
+_SENT_EMULATING_SEQUENCE = 4242
+_READ_EMULATING_SEQUENCE = (
+    _SENT_EMULATING_SEQUENCE if has_symbol("libeis.so.1", "eis_set_flag") else 0
+)
 
 
 def test_client_connects() -> None:
@@ -123,3 +145,162 @@ def test_pointer_motion_round_trips_through_negotiated_device() -> None:
 
     assert received_motion is not None, "server never received a pointer motion event"
     assert received_motion == eis.PointerEvent(dx=7, dy=3)
+
+
+def test_the_accessors_no_other_test_reaches_round_trip() -> None:
+    """One negotiation that drives every event accessor the suite had missed.
+
+    Found by asking which public names never appear in any test file: the
+    scroll, button, absolute-motion and emulating-sequence accessors on
+    ``eis.Event``, ``ei.Event.keyboard_xkb_modifiers``, and
+    ``eis.Device.device_type``/``height`` were all unexercised. Each is a
+    ctypes binding to a separate C symbol, so an unexercised one is exactly
+    where a wrong symbol name or a wrong ``restype`` hides -- the kind of
+    mistake that cannot be caught by reading, only by letting the library
+    answer.
+
+    Driven in one negotiation rather than one test apiece because the
+    expensive part is the handshake, not the assertions, and because the
+    values then have to survive the *same* frame: a wrong binding that
+    happened to return a plausible number in isolation still has to agree
+    with the five others here.
+
+    The modifier half goes the other way round from the rest. The server
+    *sends* xkb modifiers (``eis.Device.keyboard_xkb_modifiers``) and the
+    client *receives* them (``ei.Event.keyboard_xkb_modifiers``) -- two
+    different members that share a name, which is the protocol's shape and
+    not a duplication.
+    """
+    server = eis.Eis.create_for_fd()
+    client_fd = server.add_client()
+    sender = ei.Sender.create_for_fd(client_fd, name="accessor-probe")
+
+    caps = (
+        eis.DeviceCapability.POINTER,
+        eis.DeviceCapability.POINTER_ABSOLUTE,
+        eis.DeviceCapability.BUTTON,
+        eis.DeviceCapability.SCROLL,
+        eis.DeviceCapability.KEYBOARD,
+    )
+    client_caps = (
+        ei.DeviceCapability.POINTER,
+        ei.DeviceCapability.POINTER_ABSOLUTE,
+        ei.DeviceCapability.BUTTON,
+        ei.DeviceCapability.SCROLL,
+        ei.DeviceCapability.KEYBOARD,
+    )
+
+    seen: dict[str, object] = {}
+    wanted = {
+        "button",
+        "scroll",
+        "scroll_discrete",
+        "absolute",
+        "sequence",
+        "modifiers",
+    }
+    device_created = False
+    emulated = False
+
+    deadline = time.monotonic() + 30.0
+    fds: dict[int, eis.Eis | ei.Sender] = {server.fd: server, sender.fd: sender}
+
+    while not wanted <= seen.keys() and time.monotonic() < deadline:
+        ready, _, _ = select.select(list(fds), [], [], 0.2)
+        for fd in ready:
+            fds[fd].dispatch()
+
+        for server_event in server.events:
+            kind = server_event.event_type
+            if kind is eis.EventType.CLIENT_CONNECT:
+                server_event.client.connect()
+                seat = server_event.client.new_seat("accessor-seat")
+                seat.configure_capabilities(caps)
+                seat.add()
+            elif kind is eis.EventType.SEAT_BIND and not device_created:
+                device_created = True
+                assert server_event.seat is not None
+                server_device = server_event.seat.new_device()
+                # The region is not decoration: absolute motion is defined
+                # *in the device's region*, so a device configured with
+                # POINTER_ABSOLUTE and no region has nowhere to put the
+                # point and libeis drops the event. Local libei 1.6 happened
+                # to deliver it anyway; the libei the CI runners install did
+                # not, and the stricter behaviour is the correct one to write
+                # against. (100, 200) sits inside this rectangle, and
+                # `mapping_id` is deliberately left unset -- it needs libei
+                # 1.1, which the declared-floor job does not have.
+                # No `size`: libeis refuses one on a VIRTUAL device
+                # ("Device type physical required for size"), and the region
+                # is what an absolute device actually needs.
+                server_device.configure(
+                    name="accessor-device",
+                    capabilities=caps,
+                    regions=(eis.ConfigureRegion(offset=(0, 0), size=(1920, 1080)),),
+                )
+                server_device.add()
+                server_device.resume()
+                seen["device_type"] = server_device.device_type
+                seen["height"] = server_device.height
+                # The server-to-client direction, which has no event on this
+                # side to observe -- the assertion for it is on the client.
+                server_device.keyboard_xkb_modifiers(4, 0, 2, 0)
+            elif kind is eis.EventType.BUTTON_BUTTON:
+                seen["button"] = server_event.button_event
+            elif kind is eis.EventType.SCROLL_DELTA:
+                seen["scroll"] = server_event.scroll_event
+            elif kind is eis.EventType.SCROLL_DISCRETE:
+                seen["scroll_discrete"] = server_event.scroll_discrete_event
+            elif kind is eis.EventType.POINTER_MOTION_ABSOLUTE:
+                seen["absolute"] = server_event.pointer_absolute_event
+            elif kind is eis.EventType.DEVICE_START_EMULATING:
+                seen["sequence"] = server_event.emulating_sequence
+
+        for sender_event in sender.events:
+            kind = sender_event.event_type
+            if kind is ei.EventType.SEAT_ADDED and sender_event.seat is not None:
+                sender_event.seat.bind(client_caps)
+            elif kind is ei.EventType.KEYBOARD_MODIFIERS:
+                seen["modifiers"] = sender_event.keyboard_xkb_modifiers
+            elif (
+                kind is ei.EventType.DEVICE_ADDED
+                and sender_event.device is not None
+                and not emulated
+            ):
+                emulated = True
+                client_device = sender_event.device
+                client_device.start_emulating(sequence=_SENT_EMULATING_SEQUENCE)
+                client_device.button(272, True)
+                client_device.scroll_delta(3.5, -2.0)
+                client_device.scroll_discrete(120, -240)
+                client_device.pointer_motion_absolute(100.0, 200.0)
+                client_device.frame()
+                client_device.stop_emulating()
+
+    missing = sorted(wanted - seen.keys())
+    assert not missing, f"never observed: {missing}"
+
+    assert seen["button"] == eis.ButtonEvent(button=272, is_press=True)
+    assert seen["scroll"] == eis.ScrollEvent(dx=3.5, dy=-2.0)
+    assert seen["scroll_discrete"] == eis.ScrollDiscreteEvent(dx=120, dy=-240)
+    assert seen["absolute"] == eis.PointerAbsoluteEvent(x=100.0, y=200.0)
+    # The read itself stays unconditional -- calling the getter is what
+    # proves its symbol name and restype, which is this test's whole point.
+    # Only the expected value is version-dependent; see
+    # `_READ_EMULATING_SEQUENCE` above for why. Asserting the 0 below 1.6
+    # rather than skipping is deliberate: it is what
+    # `eis.Event.emulating_sequence` documents, so an old library keeps
+    # that claim under test instead of leaving it unchallenged.
+    assert seen["sequence"] == _READ_EMULATING_SEQUENCE
+    assert seen["modifiers"] == ei.XkbModifiersEvent(
+        depressed=4, latched=0, locked=2, group=0
+    )
+    # `height` is 0 here, and exactly 0 is the right assertion rather than a
+    # type check: it reports a *configured size*, which libeis accepts only
+    # on a PHYSICAL device, so a VIRTUAL one like this is unsized by
+    # definition. The region above does not change it -- a region is where
+    # the device maps to, not how big the device is. device_type is whatever
+    # libeis assigns a device this package created, so only its being a real
+    # member of the enum is claimed.
+    assert seen["device_type"] in tuple(eis.DeviceType)
+    assert seen["height"] == 0

@@ -219,7 +219,13 @@ region_get_mapping_id = lib.function(  # libei 1.1+
     "ei_region_get_mapping_id", (c_void_p,), c_char_p
 )
 # x and y are in/out parameters, overwritten only when the point is inside.
-region_convert_point = lib.function(  # libei 1.1+
+# No version marker: this one is in libei 1.0.0's own public header and
+# implemented there, so every libei at or above the declared floor exports
+# it. It carried `# libei 1.1+` alongside its genuine 1.1 neighbours
+# `ei_region_get_mapping_id` and `ei_device_region_at`, and the weekly
+# floor job caught it -- building 1.0.0 from source found the symbol
+# present where the marker promised it would be absent.
+region_convert_point = lib.function(
     "ei_region_convert_point",
     (c_void_p, POINTER(c_double), POINTER(c_double)),
     c_bool,
