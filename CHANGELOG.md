@@ -7,6 +7,21 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A socketpair round-trip covering the event accessors no test reached.**
+  Found by asking which public names never appear in any test file: the
+  scroll, button, absolute-motion and emulating-sequence accessors on
+  `eis.Event`, `ei.Event.keyboard_xkb_modifiers`, and
+  `eis.Device.device_type`/`height` were all unexercised. Each is a ctypes
+  binding to a separate C symbol, so an unexercised one is where a wrong
+  symbol name or a wrong `restype` hides -- a mistake reading cannot catch,
+  only letting the library answer. All of them were in fact correct: every
+  value round-trips exactly (button 272, scroll 3.5/-2.0, discrete 120/-240,
+  absolute 100/200, sequence 4242, modifiers 4/0/2/0). Driven in one
+  negotiation rather than one test apiece, because the handshake is the
+  expensive part and the values then have to agree within the same frame.
+
 ## [0.8.0] - 2026-10-20
 
 ### Added
