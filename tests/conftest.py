@@ -31,6 +31,23 @@ requires_libei = pytest.mark.skipif(
 )
 
 
+def has_symbol(soname: str, symbol: str) -> bool:
+    """Whether the installed native library exports ``symbol``.
+
+    The boolean behind :func:`requires_symbol`, split out for the cases
+    that must not skip. A test whose *subject* is present on every version
+    but whose *expected value* changed with one needs to run either way and
+    branch on the version -- see the sequence assertion in
+    ``test_integration_socketpair.py`` -- and for that a mark is no use.
+    """
+    import ctypes
+
+    try:
+        return hasattr(ctypes.CDLL(soname), symbol)
+    except OSError:
+        return False
+
+
 def requires_symbol(soname: str, symbol: str) -> pytest.MarkDecorator:
     """Skip unless the installed native library exports ``symbol``.
 
@@ -41,13 +58,12 @@ def requires_symbol(soname: str, symbol: str) -> pytest.MarkDecorator:
     and then silently produces no device, so a test waiting on one hangs
     until its timeout and fails rather than skipping. Checking the symbol
     up front decides before any negotiation starts.
-    """
-    import ctypes
 
-    try:
-        present = hasattr(ctypes.CDLL(soname), symbol)
-    except OSError:
-        present = False
+    Only use this where the symbol's *absence* is the thing being handled.
+    Where an older library exports the symbol and answers wrongly, this
+    gate is blind -- reach for :func:`has_symbol` and a branch instead.
+    """
     return pytest.mark.skipif(
-        not present, reason=f"{soname} does not export {symbol} (libei too old)"
+        not has_symbol(soname, symbol),
+        reason=f"{soname} does not export {symbol} (libei too old)",
     )

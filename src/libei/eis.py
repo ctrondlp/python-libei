@@ -944,7 +944,18 @@ class Event(CObject):
 
     @property
     def emulating_sequence(self) -> int:
-        """Sequence number of the start_emulating transaction."""
+        """Sequence number of the start_emulating transaction.
+
+        Reads 0 on libei older than 1.6, whatever the client sent. libeis
+        queued the event without ever copying the sequence into it, so the
+        getter returned a zeroed struct field; upstream added the missing
+        assignment in libei 1.6.0. Every version from this package's 1.0.0
+        floor up exports the symbol, so there is nothing to raise and no
+        way to tell an old library apart from a client that genuinely sent
+        0 -- treat a 0 here as "unknown" unless you know both ends are on
+        1.6. :attr:`libei.ei.Event.emulating_sequence`, the receiver side
+        of the same transaction, is unaffected: libei has always stored it.
+        """
         self._require("emulating_sequence", EventType.DEVICE_START_EMULATING)
         return _capi.libeis.event_emulating_get_sequence(self)
 

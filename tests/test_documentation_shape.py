@@ -224,6 +224,13 @@ def test_readme_version_gated_features_are_named_with_their_versions() -> None:
         # claims it is. `region_at` genuinely arrives in 1.1 and keeps that
         # row pinned.
         ("region_at", "1.1"),
+        # Not in the table above it -- the table's entries raise
+        # `LibraryNotFoundError` on an older build, and this one cannot,
+        # since every supported version exports the symbol and the old
+        # ones merely answer 0. It is documented alongside
+        # `touch_up_event` as the other accessor that degrades silently,
+        # which is the part a reader has to be told.
+        ("emulating_sequence", "1.6"),
     ):
         assert feature in readme, f"{feature} is no longer documented"
         assert version in readme, f"README no longer states the {version} requirement"

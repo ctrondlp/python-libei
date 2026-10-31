@@ -16,11 +16,12 @@ All notable changes to python-libei are recorded here. The format follows
   `eis.Device.device_type`/`height` were all unexercised. Each is a ctypes
   binding to a separate C symbol, so an unexercised one is where a wrong
   symbol name or a wrong `restype` hides -- a mistake reading cannot catch,
-  only letting the library answer. All of them were in fact correct: every
-  value round-trips exactly (button 272, scroll 3.5/-2.0, discrete 120/-240,
-  absolute 100/200, sequence 4242, modifiers 4/0/2/0). Driven in one
-  negotiation rather than one test apiece, because the handshake is the
-  expensive part and the values then have to agree within the same frame.
+  only letting the library answer. Every binding was in fact correct, and
+  on libei 1.6 every value round-trips exactly (button 272, scroll
+  3.5/-2.0, discrete 120/-240, absolute 100/200, sequence 4242, modifiers
+  4/0/2/0). Driven in one negotiation rather than one test apiece, because
+  the handshake is the expensive part and the values then have to agree
+  within the same frame.
 
   The absolute leg needed a region to be configured on the device. libei
   1.0.0's `ei_device_pointer_motion_absolute` ends in
@@ -28,6 +29,29 @@ All notable changes to python-libei are recorded here. The format follows
   list it walks is empty, so the event was *silently* dropped -- no log, no
   error, just an event that never arrived. Local libei 1.6 delivered it
   anyway, which is why this only showed up on the CI runners' 1.0.x.
+
+### Documented
+
+- **`eis.Event.emulating_sequence` reads 0 on every libei before 1.6, no
+  matter what the client sent.** `eis_queue_device_start_emulating_event()`
+  built the event and never copied the sequence into it, so the getter
+  returned a zeroed struct field; upstream added the one missing
+  assignment in libei 1.6.0 (commit `98cd152`) and in no earlier tag.
+  Measured 0 on 1.2.1, 1.3.901 and 1.5.0, and 4242 on 1.6.0 -- which
+  covers Ubuntu 24.04 and Debian 13, so it is what most users of this
+  package will see. The accessor and its binding are correct; there is
+  simply nothing in the event to read, and because the symbol is exported
+  from the 1.0.0 floor up there is nothing to raise either, leaving a 0
+  indistinguishable from a client that really sent 0. Now stated on the
+  property and in the README beside `Event.touch_up_event`, the other
+  accessor that degrades rather than raising. The client-side
+  `ei.Event.emulating_sequence` is unaffected -- libei has always stored
+  it -- so only the EIS leg of the new round-trip test is version-gated,
+  and it asserts the 0 rather than skipping, which keeps the documented
+  claim under test on an old library instead of merely unchallenged.
+  `tests/conftest.py` grew `has_symbol()` for that branch: the existing
+  `requires_symbol` mark cannot see this class of difference, where the
+  symbol is present on every version and only its answer changed.
 
 ### Fixed
 

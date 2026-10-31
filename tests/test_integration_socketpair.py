@@ -17,10 +17,32 @@ import time
 
 import pytest
 
-from conftest import requires_libei
+from conftest import has_symbol, requires_libei
 from libei import ei, eis
 
 pytestmark = [pytest.mark.integration, requires_libei]
+
+# What the client sends as its start_emulating sequence, and what the server
+# should read back for it. They are the same number only on libei 1.6+:
+# below that, libeis built the start_emulating event and never copied the
+# sequence into it, so the getter returned a zeroed struct field for every
+# client no matter what was sent. Upstream added the missing assignment in
+# libei commit 98cd152, released in 1.6.0 and in no earlier tag -- measured
+# 0 on 1.2.1, 1.3.901 and 1.5.0, 4242 on 1.6.0.
+#
+# `requires_symbol` cannot express this, which is why `has_symbol` exists:
+# every version from the 1.0.0 floor up exports
+# `eis_event_emulating_get_sequence`, the old ones just answer wrongly.
+# `eis_set_flag` is 1.6-only and stands in for the version -- and it is a
+# libeis symbol, so the library being asked is the one that answers.
+#
+# Decided here at import rather than in the test body both because that is
+# where the suite's other version gates live, and because a branch down in
+# that already-long negotiation costs more than it is worth.
+_SENT_EMULATING_SEQUENCE = 4242
+_READ_EMULATING_SEQUENCE = (
+    _SENT_EMULATING_SEQUENCE if has_symbol("libeis.so.1", "eis_set_flag") else 0
+)
 
 
 def test_client_connects() -> None:
@@ -247,7 +269,7 @@ def test_the_accessors_no_other_test_reaches_round_trip() -> None:
             ):
                 emulated = True
                 client_device = sender_event.device
-                client_device.start_emulating(sequence=4242)
+                client_device.start_emulating(sequence=_SENT_EMULATING_SEQUENCE)
                 client_device.button(272, True)
                 client_device.scroll_delta(3.5, -2.0)
                 client_device.scroll_discrete(120, -240)
@@ -262,7 +284,14 @@ def test_the_accessors_no_other_test_reaches_round_trip() -> None:
     assert seen["scroll"] == eis.ScrollEvent(dx=3.5, dy=-2.0)
     assert seen["scroll_discrete"] == eis.ScrollDiscreteEvent(dx=120, dy=-240)
     assert seen["absolute"] == eis.PointerAbsoluteEvent(x=100.0, y=200.0)
-    assert seen["sequence"] == 4242
+    # The read itself stays unconditional -- calling the getter is what
+    # proves its symbol name and restype, which is this test's whole point.
+    # Only the expected value is version-dependent; see
+    # `_READ_EMULATING_SEQUENCE` above for why. Asserting the 0 below 1.6
+    # rather than skipping is deliberate: it is what
+    # `eis.Event.emulating_sequence` documents, so an old library keeps
+    # that claim under test instead of leaving it unchallenged.
+    assert seen["sequence"] == _READ_EMULATING_SEQUENCE
     assert seen["modifiers"] == ei.XkbModifiersEvent(
         depressed=4, latched=0, locked=2, group=0
     )
