@@ -205,13 +205,14 @@ class FakeInputCaptureConnection:
             payload = self._pending_deactivated
             self._pending_deactivated = None
             self._emit_session_signal(callback, "Deactivated", payload)
-        elif signal == "Closed" and self._pending_closed:
+        elif (
+            signal == "Closed" and self._pending_closed and path == self.session_handle
+        ):
             # Closed fires on the session object's own path, not the
             # portal's -- the opposite of Activated/Deactivated above -- so
             # it is only delivered to a subscription made there.
-            if path == self.session_handle:
-                self._pending_closed = False
-                callback(None, None, path, None, "Closed", FakeReply(({},)))
+            self._pending_closed = False
+            callback(None, None, path, None, "Closed", FakeReply(({},)))
         return self._next_subscription_id
 
     def _emit_session_signal(
