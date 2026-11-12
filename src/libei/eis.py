@@ -1161,7 +1161,10 @@ class Eis(CObject):
             pointer = _capi.libeis.get_event(self)
             if not pointer:
                 break
-            event = Event.wrap(pointer)
+            # adopt(), not wrap(): eis_get_event() transfers ownership of
+            # the returned reference to the caller, and the unref in
+            # release() below is the one that balances it.
+            event = Event.adopt(pointer)
             assert event is not None
             # See ei.Context.events: try/finally so release() still runs
             # if the caller breaks out of the loop (GeneratorExit at the
@@ -1179,9 +1182,11 @@ class Eis(CObject):
     def set_flag(self, flag: Flag) -> None:
         """Change this context's protocol behavior. Requires libei 1.6.
 
-        Must be called before the backend is set up, so in practice
-        before :meth:`create_for_fd` / :meth:`create_for_socket` -- which
-        also means this is only reachable on a context built by hand.
+        Must be called before the backend is set up, so the supported
+        way to use it is the ``flags`` parameter of
+        :meth:`create_for_fd` / :meth:`create_for_socket`, which apply
+        each flag at exactly that point; calling it directly only works
+        on a context built by hand, before its backend is set up.
         Takes one flag, never a bitmask; call it again for another.
         """
         result = _capi.libeis.set_flag(self, flag)

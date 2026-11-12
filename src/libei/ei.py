@@ -372,8 +372,7 @@ class Region(CObject):
 
         Returns the point with the region's offset subtracted, or ``None``
         if it falls outside the region -- which is also how you test
-        membership without a second :meth:`contains` call. Requires
-        libei 1.1.
+        membership without a second :meth:`contains` call.
         """
         # x/y are in-out parameters: libei overwrites them only when the
         # point is inside, so the return value has to gate reading them.
@@ -1127,7 +1126,10 @@ class Context(CObject):
             pointer = _capi.libei.get_event(self)
             if not pointer:
                 break
-            event = Event.wrap(pointer)
+            # adopt(), not wrap(): ei_get_event() transfers ownership of
+            # the returned reference to the caller, and the unref in
+            # release() below is the one that balances it.
+            event = Event.adopt(pointer)
             assert event is not None
             # try/finally, not a bare call after yield: breaking out of a
             # `for event in ctx.events:` loop (or an exception propagating

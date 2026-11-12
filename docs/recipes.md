@@ -112,7 +112,8 @@ Regions carry more than bounds. `region.mapping_id` groups the ones that map
 to the same thing, `device.region_at(x, y)` finds which region a point falls
 in, and `region.convert_point(x, y)` turns a desktop-wide point into one
 relative to that region — returning `None` when it falls outside, which also
-answers "is it in here?" in a single call. All three need libei 1.1.
+answers "is it in here?" in a single call. `mapping_id` and `region_at()`
+need libei 1.1; `convert_point()` works on the libei 1.0.0 floor.
 
 ## Picking the right device when several resume
 

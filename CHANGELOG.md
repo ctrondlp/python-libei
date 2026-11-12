@@ -7,6 +7,8 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-11
+
 ### Added
 
 - **A socketpair round-trip covering the event accessors no test reached.**
@@ -66,6 +68,27 @@ All notable changes to python-libei are recorded here. The format follows
   `Region.convert_point()` is out of reach, and every remaining marker was
   swept against 1.0.0's real headers: 17 `ei_` and 18 `eis_` markers, none
   of them contradicted.
+- **A malformed `Response` reply to a portal request now raises the typed
+  `PortalProtocolError` instead of a timeout or a crash.** Every
+  Request-returning portal call waits on a `Response` specified as
+  `(u response, a{sv} results)`, and `_request` unpacked it on faith: a
+  wrong-arity payload raised inside the GLib signal callback -- where PyGI
+  prints the traceback to stderr and swallows it, so the step silently
+  degraded to a full-timeout `PortalTimeoutError` -- while a non-dict
+  `results` slipped through to callers, whose `.get()` crashed with a raw
+  `AttributeError` past `except PortalError`. The shape is now checked in
+  the callback and any mismatch ends the wait with `PortalProtocolError`
+  (the same hardening the session signals received in 0.8.0), so what
+  `_request` returns is structurally guaranteed: an `int` code and a
+  `dict` of results. `GetZones`' result *values* are converted under the
+  same kind of guard as the Activated signal's (`zone_set` as the spec's
+  `u`, each zone as four integers), closing the matching value-level
+  hole. And a `Response` landing in the same main-context iteration as
+  the request's deadline now resolves to whichever outcome was recorded
+  first, rather than the delivered reply being dropped for a timeout --
+  the same simultaneous-dispatch fix `_wait_for_signal` already had.
+
+## [0.8.0] - 2026-10-20
 
 ### Added
 

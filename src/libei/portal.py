@@ -207,6 +207,14 @@ class PortalProtocolError(PortalError):
     default message names the expected shape), a phrase for a value fault
     (naming the field). ``payload`` is whatever best shows the fault -- the
     whole signal tuple for a shape fault, the options dict for a value one.
+
+    :func:`_request` raises it the same way for a ``Request``'s
+    ``Response`` reply that does not match its own ``(u response, a{sv}
+    results)`` shape, and :meth:`InputCaptureSession.zones` for a result
+    value that is not the type the spec gives it -- always with a
+    ``detail`` phrase, since the default shape message above is specific
+    to the session signals. ``step`` is then the method name, matching the
+    sibling errors raised from the same call.
     """
 
     def __init__(self, step: str, payload: object, detail: str | None = None) -> None:
@@ -457,6 +465,18 @@ def _request(
     for 60 seconds means the answer arrives inside 60 seconds, not inside
     however many 60-second waits the sequence happens to be built from.
 
+    A ``Response`` whose payload does not match the spec's ``(u response,
+    a{sv} results)`` shape raises :class:`PortalProtocolError` rather than
+    being unpacked on faith -- the same hardening `_wait_for_signal`
+    applies to the signals it waits on, and for the same two reasons: a
+    wrong-arity payload used to raise inside the GLib callback, where PyGI
+    swallows it, degrading the step to a full-timeout
+    :class:`PortalTimeoutError`; a non-dict ``results`` instead slipped
+    through to the caller, whose ``.get()`` crashed with a raw
+    ``AttributeError`` past ``except PortalError``. The guarantee callers
+    rely on is therefore structural: what this returns is always an
+    ``int`` code and a ``dict`` of results.
+
     ``trailing_args``, appended after ``options`` in the call's parameter
     tuple, exists for ``InputCapture.SetPointerBarriers`` -- the one
     Request-returning method in either portal whose ``options`` is not its
@@ -474,12 +494,28 @@ def _request(
 
     loop = GLib.MainLoop()
     result: dict[str, Any] = {}
+    malformed: dict[str, Any] = {}
     subscriptions: list[Any] = []
     # Set inside the timeout callback rather than inferred from an empty
     # `result` afterwards: a Response carrying no results is legitimate
     # (SelectDevices answers with an empty dict), so "did the loop end
     # because it timed out" has to be recorded, not deduced.
     timed_out = False
+    # Distinct from `timed_out`: whether `on_timeout` ran at all, either
+    # path -- the flag the cleanup below keys "already removed?" on. See
+    # the matching pair in `_wait_for_signal`.
+    timeout_fired = False
+
+    def _settled() -> bool:
+        """Whether some terminal outcome has already been recorded.
+
+        Same role as in `_wait_for_signal`: GLib dispatches every source
+        ready in one main-context iteration regardless of an earlier
+        ``loop.quit()``, so a Response and the deadline can both fire in
+        the same poll -- the first recorded outcome wins, and a delivered
+        reply is never dropped for a timeout (or vice versa).
+        """
+        return bool(result) or bool(malformed) or timed_out
 
     def on_response(
         _conn: Any,
@@ -491,14 +527,42 @@ def _request(
         *_a: Any,
     ) -> None:
         """Record the first reply and quit the loop; later replies are ignored."""
-        if result:  # both subscriptions may fire; the first reply wins
+        if _settled():  # both subscriptions may fire; the first reply wins
             return
-        result["code"], result["results"] = params.unpack()
+        args = params.unpack()
+        # Checked here, raised only after the loop: this runs inside a
+        # GLib callback, where PyGI prints an exception to stderr and
+        # swallows it -- a bare raise on a malformed Response would leave
+        # the loop running until the full timeout, misreported as
+        # PortalTimeoutError; a non-dict `results` let through instead
+        # crashed the caller's `.get()` with a raw AttributeError past
+        # `except PortalError`. Same hardening `_wait_for_signal` applies
+        # to the signals it waits on.
+        if (
+            not isinstance(args, tuple)
+            or len(args) != 2
+            or isinstance(args[0], bool)
+            or not isinstance(args[0], int)
+            or not isinstance(args[1], dict)
+        ):
+            malformed["args"] = args
+            loop.quit()
+            return
+        result["code"], result["results"] = args
         loop.quit()
 
     def on_timeout() -> bool:
         """Stop the loop and record that it timed out rather than finished."""
-        nonlocal timed_out
+        nonlocal timed_out, timeout_fired
+        # Set first, before the early return: GLib removes the source the
+        # moment this returns False (which both paths do), so the finally
+        # block keys "already removed" on this, not on `timed_out` -- see
+        # the same dance in `_wait_for_signal`.
+        timeout_fired = True
+        if _settled():
+            # A Response delivered in the same poll as the deadline has
+            # already recorded its outcome; do not overwrite it.
+            return False
         timed_out = True
         loop.quit()
         return False  # one-shot; GLib removes the source when this is False
@@ -542,12 +606,14 @@ def _request(
         handle = _returned_handle(reply)
         if handle is not None and handle != expected_path:
             subscribe(handle)
-        # `if not result` because a synchronous answer (a fast
+        # `if not _settled()` because a synchronous answer (a fast
         # non-interactive Response, or a test double) can arrive during the
         # call above, before run() is reached -- and quit() on a loop that
         # is not running yet does not stop the later run(), so running it
-        # then would block with the reply already delivered.
-        if not result:
+        # then would block with the reply already delivered. A malformed
+        # synchronous reply counts: it too has already quit a loop that
+        # was not running yet.
+        if not _settled():
             timeout_source = GLib.timeout_add(_msec_until(deadline), on_timeout)
             try:
                 loop.run()
@@ -559,12 +625,27 @@ def _request(
                 # fixed for _wait_for_signal below. Only remove it when the
                 # *Response* woke the loop instead; leaving a live source in
                 # that case holds a reference to this closure and fires it
-                # into a dead loop on some later request.
-                if not timed_out:
+                # into a dead loop on some later request. Keyed on
+                # `timeout_fired` (did on_timeout run), not `timed_out` (did
+                # the wait time out): a Response landing in the same poll as
+                # the deadline runs on_timeout down its `_settled` early
+                # return, which removes the source yet leaves `timed_out`
+                # False.
+                if not timeout_fired:
                     GLib.source_remove(timeout_source)
     finally:
         for subscription in subscriptions:
             connection.signal_unsubscribe(subscription)
+    # Mirrors `_signal_outcome`: only one of these is ever set (every
+    # callback checks `_settled()` first), so the order here only decides
+    # between genuinely simultaneous dispatches.
+    if malformed:
+        raise PortalProtocolError(
+            method,
+            malformed["args"],
+            "the Request's Response signal is specified as "
+            "(uint response, results dict)",
+        )
     if timed_out:
         raise PortalTimeoutError(method, timeout)
     return result["code"], result["results"]
@@ -1608,9 +1689,26 @@ class InputCaptureSession:
         )
         if code != 0:
             raise PortalDeniedError("GetZones")
-        zone_set = results.get("zone_set", 0)
-        zones = [tuple(z) for z in results.get("zones", [])]
-        return int(zone_set), zones
+        # `results` is a dict by `_request`'s own guarantee; the *values*
+        # are still the portal's to malform. The spec types them --
+        # `zone_set` is a `u`, `zones` an `a(uuii)` -- so convert them
+        # under one guard, the same way `_activation_from_options` covers
+        # the Activated signal's values: a non-conforming value becomes
+        # the typed PortalProtocolError rather than a raw
+        # TypeError/ValueError past `except PortalError` in the caller.
+        try:
+            zone_set = int(results.get("zone_set", 0))
+            zones = [
+                (int(w), int(h), int(x), int(y))
+                for w, h, x, y in results.get("zones", [])
+            ]
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise PortalProtocolError(
+                "GetZones",
+                results,
+                "a result value is not the type the spec gives it",
+            ) from exc
+        return zone_set, zones
 
     def set_pointer_barriers(
         self,
@@ -1659,7 +1757,19 @@ class InputCaptureSession:
         )
         if code != 0:
             raise PortalDeniedError("SetPointerBarriers")
-        failed = list(results.get("failed_barriers", []))
+        # `results` is a dict by `_request`'s own guarantee; the *value* at
+        # `failed_barriers` (an `au` per the spec) is not. A non-iterable
+        # there would crash the caller with a raw TypeError past
+        # `except PortalError` -- the same value-level hole `zones()` guards
+        # -- so a malformed one becomes the typed PortalProtocolError.
+        try:
+            failed = [int(b) for b in results.get("failed_barriers", [])]
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise PortalProtocolError(
+                "SetPointerBarriers",
+                results,
+                "a result value is not the type the spec gives it",
+            ) from exc
         # A partially-refused set is the quiet failure here: the call
         # succeeds, some barriers stand, and an edge the caller believes is
         # armed simply never triggers. Callers see only the returned list,

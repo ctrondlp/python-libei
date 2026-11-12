@@ -618,6 +618,179 @@ def test_request_does_not_double_remove_the_timeout_source_on_timeout() -> None:
     source_remove.assert_not_called()
 
 
+class RawResponseConnection(FakeConnection):
+    """Fires every Request's Response with a verbatim payload tuple.
+
+    FakeConnection always answers in the spec's ``(u response, a{sv}
+    results)`` shape; this is how a test hands `_request()` a Response a
+    spec-conforming portal cannot send -- the same job
+    ``pending_activated_raw`` does for the session signals in
+    test_inputcapture.py's FakeInputCaptureConnection.
+    """
+
+    def __init__(self, raw: tuple[Any, ...], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._raw = raw
+
+    def call_sync(
+        self,
+        bus_name: Any,
+        object_path: Any,
+        interface: Any,
+        method: str,
+        parameters: FakeVariant | None,
+        reply_type: Any,
+        flags: Any,
+        timeout: Any,
+        cancellable: Any,
+    ) -> FakeReply:
+        self.calls.append((method, None if parameters is None else parameters.value))
+        self.call_targets.append((method, bus_name, object_path, timeout))
+        if parameters is None:
+            return FakeReply(())
+        if method == "Get":
+            return FakeReply((self.version,))
+        *_leading, options = parameters.value
+        token = options["handle_token"].value
+        path = (
+            f"/org/freedesktop/portal/desktop/request/{self._escaped_sender()}/{token}"
+        )
+        # The subscribe-before-call pattern guarantees this is registered.
+        callback = self._subscriptions[path]
+        callback(None, None, path, None, "Response", FakeReply(self._raw))
+        return FakeReply((path,))
+
+
+def test_a_wrong_arity_response_raises_a_typed_error() -> None:
+    # Before the shape check, unpacking this raised ValueError *inside* the
+    # GLib signal callback -- where PyGI prints the traceback to stderr and
+    # swallows it, so no reply was ever recorded and the step silently
+    # degraded to a full-timeout PortalTimeoutError. Same hardening the
+    # session signals got in _wait_for_signal (see test_inputcapture.py's
+    # test_a_malformed_activated_payload_raises_a_typed_error).
+    connection = RawResponseConnection((0,))
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection, timeout=0.01)
+    # `.step` is the method name, matching the PortalTimeoutError and
+    # PortalDeniedError raised for the same call.
+    assert excinfo.value.step == "CreateSession"
+    assert excinfo.value.payload == (0,)
+    # The default shape message names the *signal* payload shape, which
+    # would misdescribe a Response -- _request always passes its own.
+    assert excinfo.value.detail is not None
+
+
+def test_a_non_integer_response_code_raises_a_typed_error() -> None:
+    # Arity-valid, but the response code is not the spec's `u`. Letting it
+    # through would misreport the step: `code != 0` on a string is simply
+    # True, which reads as PortalDeniedError -- "the user declined" -- for
+    # what is actually a non-conforming portal.
+    connection = RawResponseConnection(("denied", {}))
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection, timeout=0.01)
+    assert excinfo.value.step == "CreateSession"
+    assert excinfo.value.payload == ("denied", {})
+
+
+def test_a_non_dict_response_results_raises_a_typed_error() -> None:
+    # The other failure mode of unpacking on faith: a two-element payload
+    # whose `results` is not a dict sailed through _request and crashed the
+    # *caller's* results.get() with a raw AttributeError -- past `except
+    # PortalError`. FakeConnection fires whatever `responses` holds, so no
+    # raw-payload subclass is needed for this one.
+    responses: dict[str, Any] = {"CreateSession": (0, "not-a-dict")}
+    connection = FakeConnection(responses=responses)
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection, timeout=0.01)
+    assert excinfo.value.step == "CreateSession"
+    assert excinfo.value.payload == (0, "not-a-dict")
+
+
+def test_a_response_and_the_deadline_in_one_poll_return_the_reply() -> None:
+    # GLib dispatches every source ready in one main-context iteration
+    # regardless of an earlier loop.quit(), so a Response can land in the
+    # same poll as the request's deadline. on_response records the reply
+    # and quits; on_timeout still runs, must see the wait already settled
+    # rather than overwrite a delivered reply with PortalTimeoutError, and
+    # must not have the finally block remove the source its own False
+    # return already deregistered. The same race _wait_for_signal already
+    # handles -- see test_inputcapture.py's
+    # test_a_signal_and_the_deadline_in_one_poll_do_not_double_remove_the_source.
+    class FirstRequestSilentConnection(FakeConnection):
+        """Leaves the first Request unanswered, for the test to deliver."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.race_path: str | None = None
+            self.race_reply: tuple[int, dict[str, Any]] | None = None
+
+        def call_sync(
+            self,
+            bus_name: Any,
+            object_path: Any,
+            interface: Any,
+            method: str,
+            parameters: FakeVariant | None,
+            reply_type: Any,
+            flags: Any,
+            timeout: Any,
+            cancellable: Any,
+        ) -> FakeReply:
+            if self.race_path is not None or parameters is None or method == "Get":
+                return super().call_sync(
+                    bus_name,
+                    object_path,
+                    interface,
+                    method,
+                    parameters,
+                    reply_type,
+                    flags,
+                    timeout,
+                    cancellable,
+                )
+            self.calls.append((method, parameters.value))
+            self.call_targets.append((method, bus_name, object_path, timeout))
+            *_leading, options = parameters.value
+            token = options["handle_token"].value
+            sender = self._escaped_sender()
+            self.race_path = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
+            self.race_reply = self.responses.get(method, (0, {}))
+            return FakeReply((self.race_path,))
+
+    connection = FirstRequestSilentConnection()
+
+    def deliver_response() -> None:
+        assert connection.race_path is not None
+        assert connection.race_reply is not None
+        code, results = connection.race_reply
+        connection._subscriptions[connection.race_path](
+            None,
+            None,
+            connection.race_path,
+            None,
+            "Response",
+            FakeReply((code, results)),
+        )
+
+    with install_fake_gi(connection):
+        glib = sys.modules["gi.repository.GLib"]
+        FakeMainLoop.inject_before_timeout = deliver_response
+        with mock.patch.object(glib, "source_remove") as source_remove:
+            session = portal.RemoteDesktopSession.negotiate(
+                connection=connection, timeout=5.0
+            )
+    # The delivered reply wins -- negotiation ran every step to completion
+    # instead of raising PortalTimeoutError at CreateSession -- and the
+    # source the firing on_timeout already removed is not removed again.
+    assert session is not None
+    methods = [c[0] for c in connection.calls]
+    assert methods == ["Get", "CreateSession", "SelectDevices", "Start", "ConnectToEIS"]
+    source_remove.assert_not_called()
+
+
 def test_close_closes_an_unclaimed_eis_fd() -> None:
     # The fd arrives dup'd and owned. If nobody ever reads `eis_fd` (so it
     # was never handed to a Sender, which would close it itself), nothing
