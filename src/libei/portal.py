@@ -1181,6 +1181,23 @@ def _classify_signal_payload(
     return "take"
 
 
+def _spec_int(value: Any) -> int:
+    """``int(value)`` for a spec ``u``/``i``, refusing a silent truncation.
+
+    A portal integer field arrives as a Python ``int``. A malformed portal
+    that put a ``d`` (double) there would still reach ``int()``, and
+    ``int(0.9) == 0`` / ``int(1.9) == 1`` truncates it *silently* -- a zone
+    coordinate or a refused barrier id quietly becomes a different,
+    valid-looking value rather than an error. Reject any ``float``
+    (``inf``/``nan`` included) with the ``ValueError`` the surrounding
+    guards already turn into a :class:`PortalProtocolError`, so an off-spec
+    fractional value is refused on the same footing as a non-numeric one.
+    """
+    if isinstance(value, float):
+        raise ValueError("a fractional value where the spec gives an integer")
+    return int(value)
+
+
 def _deactivation_id(options: dict[str, Any], signal: str) -> int:
     """The ``activation_id`` from Deactivated's options, as the spec's ``u``.
 
@@ -1188,13 +1205,12 @@ def _deactivation_id(options: dict[str, Any], signal: str) -> int:
     dict -- but not the types of the values in it. ``activation_id`` is a
     ``u``, and a non-conforming portal that put something else there would
     crash the caller with ``ValueError``/``TypeError``/``OverflowError``
-    (the last from ``int(float('inf'))``) past the shape check. Converting
-    it here turns that into the same typed :class:`PortalProtocolError` the
-    shape check raises, so a caller that guards against malformed signals
-    catches one error, not two.
+    past the shape check. Converting it here turns that into the same typed
+    :class:`PortalProtocolError` the shape check raises, so a caller that
+    guards against malformed signals catches one error, not two.
     """
     try:
-        return int(options.get("activation_id", 0))
+        return _spec_int(options.get("activation_id", 0))
     except (ValueError, TypeError, OverflowError) as exc:
         raise PortalProtocolError(
             signal, options, "activation_id is not an integer"
@@ -1215,7 +1231,7 @@ def _activation_from_options(options: dict[str, Any], signal: str) -> Activation
     fourth hand-rolled check nobody remembers to write.
     """
     try:
-        activation_id = int(options.get("activation_id", 0))
+        activation_id = _spec_int(options.get("activation_id", 0))
         cursor = options.get("cursor_position")
         if cursor is None:
             cursor_position = None
@@ -1223,7 +1239,7 @@ def _activation_from_options(options: dict[str, Any], signal: str) -> Activation
             cx, cy = cursor  # (dd): exactly two, or this unpacking raises
             cursor_position = (float(cx), float(cy))
         barrier = options.get("barrier_id")
-        barrier_id = None if barrier is None else int(barrier)
+        barrier_id = None if barrier is None else _spec_int(barrier)
     except (ValueError, TypeError, OverflowError) as exc:
         raise PortalProtocolError(
             signal, options, "an option value is not the type the spec gives it"
@@ -1697,9 +1713,9 @@ class InputCaptureSession:
         # the typed PortalProtocolError rather than a raw
         # TypeError/ValueError past `except PortalError` in the caller.
         try:
-            zone_set = int(results.get("zone_set", 0))
+            zone_set = _spec_int(results.get("zone_set", 0))
             zones = [
-                (int(w), int(h), int(x), int(y))
+                (_spec_int(w), _spec_int(h), _spec_int(x), _spec_int(y))
                 for w, h, x, y in results.get("zones", [])
             ]
         except (ValueError, TypeError, OverflowError) as exc:
@@ -1763,7 +1779,7 @@ class InputCaptureSession:
         # `except PortalError` -- the same value-level hole `zones()` guards
         # -- so a malformed one becomes the typed PortalProtocolError.
         try:
-            failed = [int(b) for b in results.get("failed_barriers", [])]
+            failed = [_spec_int(b) for b in results.get("failed_barriers", [])]
         except (ValueError, TypeError, OverflowError) as exc:
             raise PortalProtocolError(
                 "SetPointerBarriers",

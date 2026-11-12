@@ -80,13 +80,26 @@ All notable changes to python-libei are recorded here. The format follows
   the callback and any mismatch ends the wait with `PortalProtocolError`
   (the same hardening the session signals received in 0.8.0), so what
   `_request` returns is structurally guaranteed: an `int` code and a
-  `dict` of results. `GetZones`' result *values* are converted under the
-  same kind of guard as the Activated signal's (`zone_set` as the spec's
-  `u`, each zone as four integers), closing the matching value-level
-  hole. And a `Response` landing in the same main-context iteration as
+  `dict` of results. `GetZones`' and `SetPointerBarriers`' result *values*
+  are converted under the same kind of guard as the Activated signal's
+  (`zone_set` and each zone's four coordinates as the spec's integers,
+  `failed_barriers` as a list of them) -- and a `d` where the spec gives
+  an integer is now rejected rather than silently truncated by `int()`, so
+  a `0.9` coordinate or a `1.9` refused-barrier id cannot read back as a
+  different, valid-looking value. And a `Response` landing in the same
+  main-context iteration as
   the request's deadline now resolves to whichever outcome was recorded
   first, rather than the delivered reply being dropped for a timeout --
   the same simultaneous-dispatch fix `_wait_for_signal` already had.
+- **Every event pulled from the dispatch queue leaked one C reference.**
+  `ei_get_event()` and `eis_get_event()` transfer ownership of the
+  returned event to the caller, but `ei.Context.events()` and
+  `eis.Eis.events()` wrapped it with `wrap()`, which is for *borrowed*
+  pointers and takes its own extra ref -- so the transferred reference was
+  never released, leaking one `ei_event`/`eis_event` for every event the
+  iterator yielded. They now `adopt()` the transferred reference, which
+  takes no extra ref and lets the wrapper's finalizer balance the one the
+  C API handed over.
 
 ## [0.8.0] - 2026-10-20
 

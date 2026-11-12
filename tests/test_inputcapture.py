@@ -515,6 +515,22 @@ def test_a_malformed_zone_entry_raises_a_typed_error() -> None:
     assert excinfo.value.detail is not None
 
 
+def test_a_fractional_zone_value_is_rejected_not_truncated() -> None:
+    # The quiet case int() would hide: a `d` where the spec gives an `i`.
+    # int(0.9) == 0 silently, so a zone whose x started at 0.9 would read
+    # back as a different, valid-looking rectangle. _spec_int refuses it on
+    # the same footing as a non-numeric value rather than truncating.
+    connection = FakeInputCaptureConnection(
+        responses={"GetZones": (0, {"zone_set": 1, "zones": [(1920, 1080, 0.9, 0)]})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.zones()
+    assert excinfo.value.step == "GetZones"
+    assert excinfo.value.detail is not None
+
+
 def test_set_pointer_barriers_sends_barrier_id_and_position() -> None:
     connection = FakeInputCaptureConnection()
     with install_fake_gi(connection):
@@ -553,6 +569,23 @@ def test_a_malformed_failed_barriers_value_raises_a_typed_error() -> None:
         session = portal.InputCaptureSession.negotiate(connection=connection)
         with pytest.raises(portal.PortalProtocolError) as excinfo:
             session.set_pointer_barriers([(1, 0, 0, 1919, 0)], zone_set=7)
+    assert excinfo.value.step == "SetPointerBarriers"
+    assert excinfo.value.detail is not None
+
+
+def test_a_fractional_failed_barrier_is_rejected_not_truncated() -> None:
+    # int(1.9) == 1 would hand the caller a *different* armed barrier's id
+    # as the refused one -- a silent mis-identification rather than an
+    # error. _spec_int rejects the off-spec `d` instead of truncating it.
+    connection = FakeInputCaptureConnection(
+        responses={"SetPointerBarriers": (0, {"failed_barriers": [1.9]})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.set_pointer_barriers(
+                [(1, 0, 0, 1919, 0), (2, 1920, 0, 1920, 1079)], zone_set=7
+            )
     assert excinfo.value.step == "SetPointerBarriers"
     assert excinfo.value.detail is not None
 
@@ -753,10 +786,24 @@ def test_a_non_integer_barrier_id_raises_a_typed_error() -> None:
             session.wait_for_activation(timeout=1.0)
 
 
+def test_a_fractional_barrier_id_is_rejected_not_truncated() -> None:
+    # The Activated signal's `u` barrier_id, same hazard as the zones and
+    # failed-barriers values: int(2.9) == 2 would silently name a different
+    # armed barrier as the one that triggered. _spec_int refuses the float.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 1, "barrier_id": 2.9}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
 def test_an_infinite_activation_id_raises_a_typed_error() -> None:
-    # int(float('inf')) raises OverflowError, which the old (ValueError,
-    # TypeError) guard missed -- it would have escaped a caller's
-    # `except PortalError`.
+    # A non-finite float is still a float, so _spec_int rejects it before
+    # int() is reached -- int(float('inf')) would raise OverflowError, which
+    # the original (ValueError, TypeError) guard missed and a caller's
+    # `except PortalError` would not have caught.
     connection = FakeInputCaptureConnection(
         pending_activated={"activation_id": float("inf")}
     )
