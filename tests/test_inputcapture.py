@@ -205,13 +205,14 @@ class FakeInputCaptureConnection:
             payload = self._pending_deactivated
             self._pending_deactivated = None
             self._emit_session_signal(callback, "Deactivated", payload)
-        elif signal == "Closed" and self._pending_closed:
+        elif (
+            signal == "Closed" and self._pending_closed and path == self.session_handle
+        ):
             # Closed fires on the session object's own path, not the
             # portal's -- the opposite of Activated/Deactivated above -- so
             # it is only delivered to a subscription made there.
-            if path == self.session_handle:
-                self._pending_closed = False
-                callback(None, None, path, None, "Closed", FakeReply(({},)))
+            self._pending_closed = False
+            callback(None, None, path, None, "Closed", FakeReply(({},)))
         return self._next_subscription_id
 
     def _emit_session_signal(
@@ -464,6 +465,72 @@ def test_a_declined_get_zones_raises_portal_denied_error() -> None:
     assert excinfo.value.step == "GetZones"
 
 
+def test_a_non_dict_get_zones_results_raises_a_typed_error() -> None:
+    # _request's shape check, seen from a consumer: zones() used to call
+    # .get() on whatever the Response carried, so a non-dict `results`
+    # crashed it with a raw AttributeError past `except PortalError`. The
+    # check lives in _request, which is why `step` names the method.
+    responses: dict[str, Any] = {"GetZones": (0, ["not", "a", "dict"])}
+    connection = FakeInputCaptureConnection(responses=responses)
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.zones()
+    assert excinfo.value.step == "GetZones"
+    assert excinfo.value.payload == (0, ["not", "a", "dict"])
+
+
+def test_a_non_integer_zone_set_raises_a_typed_error() -> None:
+    # Shape-valid results (a dict), but zone_set is not the `u` the spec
+    # promises -- this passes _request's shape check and used to crash the
+    # caller with ValueError on int(). Now the same typed error as a shape
+    # violation, with a value-level detail, exactly like a malformed
+    # activation_id (test_a_non_integer_activation_id_raises_a_typed_error).
+    connection = FakeInputCaptureConnection(
+        responses={"GetZones": (0, {"zone_set": "seven", "zones": []})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.zones()
+    assert excinfo.value.step == "GetZones"
+    assert excinfo.value.detail is not None
+    assert "shape" not in str(excinfo.value)
+
+
+def test_a_malformed_zone_entry_raises_a_typed_error() -> None:
+    # A zone that is not the spec's (uuii) quadruple used to be handed
+    # back verbatim -- `tuple(z)` kept whatever arity arrived, quietly
+    # violating the annotated (int, int, int, int) -- while a `zones`
+    # value that is not a list of sequences at all escaped as a raw
+    # TypeError. Both are now the same typed error.
+    connection = FakeInputCaptureConnection(
+        responses={"GetZones": (0, {"zone_set": 1, "zones": [(1920, 1080)]})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.zones()
+    assert excinfo.value.step == "GetZones"
+    assert excinfo.value.detail is not None
+
+
+def test_a_fractional_zone_value_is_rejected_not_truncated() -> None:
+    # The quiet case int() would hide: a `d` where the spec gives an `i`.
+    # int(0.9) == 0 silently, so a zone whose x started at 0.9 would read
+    # back as a different, valid-looking rectangle. _spec_int refuses it on
+    # the same footing as a non-numeric value rather than truncating.
+    connection = FakeInputCaptureConnection(
+        responses={"GetZones": (0, {"zone_set": 1, "zones": [(1920, 1080, 0.9, 0)]})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.zones()
+    assert excinfo.value.step == "GetZones"
+    assert excinfo.value.detail is not None
+
+
 def test_set_pointer_barriers_sends_barrier_id_and_position() -> None:
     connection = FakeInputCaptureConnection()
     with install_fake_gi(connection):
@@ -488,6 +555,39 @@ def test_set_pointer_barriers_reports_the_failed_ones() -> None:
             [(1, 0, 0, 1919, 0), (2, 1920, 0, 1920, 1079)], zone_set=7
         )
     assert failed == [2]
+
+
+def test_a_malformed_failed_barriers_value_raises_a_typed_error() -> None:
+    # `failed_barriers` is an `au`; a non-iterable (or non-integer element)
+    # there used to crash the caller with a raw TypeError/ValueError past
+    # `except PortalError`, the same value-level hole zones() closed. Now a
+    # typed PortalProtocolError.
+    connection = FakeInputCaptureConnection(
+        responses={"SetPointerBarriers": (0, {"failed_barriers": 7})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.set_pointer_barriers([(1, 0, 0, 1919, 0)], zone_set=7)
+    assert excinfo.value.step == "SetPointerBarriers"
+    assert excinfo.value.detail is not None
+
+
+def test_a_fractional_failed_barrier_is_rejected_not_truncated() -> None:
+    # int(1.9) == 1 would hand the caller a *different* armed barrier's id
+    # as the refused one -- a silent mis-identification rather than an
+    # error. _spec_int rejects the off-spec `d` instead of truncating it.
+    connection = FakeInputCaptureConnection(
+        responses={"SetPointerBarriers": (0, {"failed_barriers": [1.9]})}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            session.set_pointer_barriers(
+                [(1, 0, 0, 1919, 0), (2, 1920, 0, 1920, 1079)], zone_set=7
+            )
+    assert excinfo.value.step == "SetPointerBarriers"
+    assert excinfo.value.detail is not None
 
 
 def test_partially_refused_barriers_are_logged(
@@ -686,10 +786,24 @@ def test_a_non_integer_barrier_id_raises_a_typed_error() -> None:
             session.wait_for_activation(timeout=1.0)
 
 
+def test_a_fractional_barrier_id_is_rejected_not_truncated() -> None:
+    # The Activated signal's `u` barrier_id, same hazard as the zones and
+    # failed-barriers values: int(2.9) == 2 would silently name a different
+    # armed barrier as the one that triggered. _spec_int refuses the float.
+    connection = FakeInputCaptureConnection(
+        pending_activated={"activation_id": 1, "barrier_id": 2.9}
+    )
+    with install_fake_gi(connection):
+        session = portal.InputCaptureSession.negotiate(connection=connection)
+        with pytest.raises(portal.PortalProtocolError):
+            session.wait_for_activation(timeout=1.0)
+
+
 def test_an_infinite_activation_id_raises_a_typed_error() -> None:
-    # int(float('inf')) raises OverflowError, which the old (ValueError,
-    # TypeError) guard missed -- it would have escaped a caller's
-    # `except PortalError`.
+    # A non-finite float is still a float, so _spec_int rejects it before
+    # int() is reached -- int(float('inf')) would raise OverflowError, which
+    # the original (ValueError, TypeError) guard missed and a caller's
+    # `except PortalError` would not have caught.
     connection = FakeInputCaptureConnection(
         pending_activated={"activation_id": float("inf")}
     )
