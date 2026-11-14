@@ -337,10 +337,10 @@ against the real library.
 
 ## Logging
 
-libei's own diagnostics are routed into Python's `logging` — the `libei.ei`,
-`libei.eis` and `libei.oeffis` loggers — rather than being written to stderr
-by the C library. This is how you see the warnings that otherwise look like
-nothing happening at all, `device is not an absolute pointer` among them:
+libei's and libeis's own diagnostics are routed into Python's `logging` — the
+`libei.ei` and `libei.eis` loggers — rather than being written to stderr by the
+C library. This is how you see the warnings that otherwise look like nothing
+happening at all, `device is not an absolute pointer` among them:
 
 ```python
 import logging
@@ -352,3 +352,8 @@ At `DEBUG` this is a full protocol trace (every object, message and signature,
 both directions — a few hundred lines for a single connect and one pointer
 motion), which makes it the first thing to reach for when a negotiation
 stalls. `WARNING` gets you just libei's complaints.
+
+There is no equivalent for liboeffis: it exposes no log-handler entry point to
+hook, so no C-library diagnostics reach the `libei.oeffis` logger. That logger
+carries only this package's own messages — a single `DEBUG` line when an oeffis
+event of an unrecognised type arrives — never routed C diagnostics.

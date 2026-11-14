@@ -215,6 +215,15 @@ class PortalProtocolError(PortalError):
     ``detail`` phrase, since the default shape message above is specific
     to the session signals. ``step`` is then the method name, matching the
     sibling errors raised from the same call.
+
+    :func:`_call_for_fd` -- both portals' ``ConnectToEIS``, whose reply is
+    an *index* into a separate out fd list -- raises it for
+    the three ways that pair can disagree: no fd list attached at all
+    (the out list is nullable), an index outside the list, and the dup
+    ``g_unix_fd_list_get()`` does failing on fd exhaustion. ``payload`` is
+    the index in each case. Those used to reach the caller as an
+    ``AttributeError``, a silent ``-1`` fd, and a raw ``GLib.Error``
+    respectively -- none of them catchable as a ``PortalError``.
     """
 
     def __init__(self, step: str, payload: object, detail: str | None = None) -> None:
@@ -671,6 +680,27 @@ def _call_for_fd(
     wait on and nothing here beyond the call itself -- but it is a call to
     the same portal that just made the caller wait on a consent dialog, so
     it is bounded by the same ``timeout`` rather than by GIO's default.
+
+    The reply carries only an *index* into a separate out fd list, and both
+    halves have to be checked before the index is used, because
+    `g_unix_fd_list_get()` will not check them for us:
+
+    * The out fd list is **nullable** -- ``call_with_unix_fd_list_sync()``
+      is specified to hand back ``NULL`` for it, so a well-formed ``(h)``
+      reply with no fds attached arrives here as ``None``. Dereferencing
+      that raised ``AttributeError`` at the caller, outside every
+      ``except PortalError``.
+    * A bad index is a **programmer error**, not a runtime failure:
+      ``g_unix_fd_list_get()`` asserts ``index >= 0 && index < nfd``,
+      logs ``GLib-GIO-CRITICAL`` and **returns -1 without raising and
+      without setting a GError** (measured on GLib 2.90.1). So an
+      out-of-range index cannot be caught by an ``except GLib.Error``; the
+      -1 just flows out as the EIS fd. Gio-2.0.gir says as much and names
+      the two fixes: ``lookup()``, which is GLib 2.90+ only, or a bounds
+      check against ``get_length()`` -- the portable one, used below.
+
+    The one real ``GLib.Error`` from ``get()`` is the dup itself failing on
+    an fd the list does hold, i.e. EMFILE/ENFILE.
     """
     try:
         reply, fd_list = connection.call_with_unix_fd_list_sync(
@@ -690,7 +720,82 @@ def _call_for_fd(
             raise PortalTimeoutError(method, timeout) from exc
         raise PortalError(f"{method} failed on the D-Bus: {exc}") from exc
     (handle_index,) = reply.unpack()
-    return fd_list.get(handle_index)
+    # Each of the three checks below turns something that used to escape a
+    # caller's `except PortalError` -- an AttributeError, a silent -1, a raw
+    # GLib.Error -- into the same typed protocol error _request() raises for a
+    # malformed Response. See this function's docstring for the GLib contract
+    # they are reading.
+    if fd_list is None:
+        raise PortalProtocolError(
+            method,
+            handle_index,
+            "it returned an fd index but attached no fd list to the reply",
+        )
+    length = fd_list.get_length()
+    if handle_index < 0 or handle_index >= length:
+        raise PortalProtocolError(
+            method,
+            handle_index,
+            "the fd index it returned is out of range for the reply's fd list "
+            f"(index {handle_index}, {length} fd(s) attached)",
+        )
+    try:
+        fd = fd_list.get(handle_index)
+    except _glib_error(GLib) as exc:
+        # The index is in range, so this is not a lookup failure: the only
+        # thing left for g_unix_fd_list_get() to fail at is the dup() it does
+        # to hand back an owned fd.
+        raise PortalProtocolError(
+            method,
+            handle_index,
+            "duplicating the fd it returned failed -- this process is out of "
+            f"file descriptors ({exc})",
+        ) from exc
+    if fd < 0:
+        # Unreachable via the bounds check above, which is the only documented
+        # way to get the -1 sentinel; kept so a future GLib that returns it for
+        # some other reason surfaces as a typed error rather than as a negative
+        # fd handed to ei.Sender.create_for_fd(), which does not check for one.
+        raise PortalProtocolError(
+            method,
+            handle_index,
+            f"its fd list returned no usable fd for index {handle_index} (got {fd})",
+        )
+    return fd
+
+
+def _portal_version(reply: Any, interface: str) -> int:
+    """The ``version`` property out of a `Properties.Get` reply, as an int.
+
+    `_call_sync` is given no ``reply_type``, here as everywhere else in this
+    module, so GDBus validates nothing about the shape of what comes back --
+    which is why every other reply-consuming site checks the unpacked value
+    before trusting it. These two did not: a reply that unpacked to anything
+    but a one-element tuple raised `ValueError`, and a ``version`` that was
+    not a number raised `TypeError`, both bare built-ins escaping the
+    `except PortalError` that `docs/troubleshooting.md` promises covers the
+    negotiation.
+    """
+    unpacked = reply.unpack()
+    try:
+        (version,) = unpacked
+    except (ValueError, TypeError) as exc:
+        raise PortalProtocolError(
+            "Get",
+            unpacked,
+            f"{interface}'s version property is specified as a single "
+            f"value, and this reply is not that shape",
+        ) from exc
+    # bool before int, because bool *is* an int: a True would otherwise read
+    # as version 1 and be refused as "too old", blaming the portal's version
+    # for a reply that was nonsense.
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise PortalProtocolError(
+            "Get",
+            unpacked,
+            f"{interface} reported a non-numeric version {version!r}",
+        )
+    return version
 
 
 def _remote_desktop_version(
@@ -709,8 +814,7 @@ def _remote_desktop_version(
         None,
         int(timeout * 1000),
     )
-    (version,) = reply.unpack()
-    return int(version)
+    return _portal_version(reply, _REMOTE_DESKTOP)
 
 
 class RemoteDesktopSession:
@@ -1092,8 +1196,7 @@ def _input_capture_version(
         None,
         int(timeout * 1000),
     )
-    (version,) = reply.unpack()
-    return int(version)
+    return _portal_version(reply, _INPUT_CAPTURE)
 
 
 def _create_input_capture_session_v1(
@@ -1388,35 +1491,44 @@ def _wait_for_signal(
         loop.quit()
         return False
 
-    subscription = connection.signal_subscribe(
-        busname,
-        interface,
-        signal,
-        _OBJECT_PATH,
-        None,
-        Gio.DBusSignalFlags.NONE,
-        on_signal,
-        None,
-    )
-    closed_subscription = connection.signal_subscribe(
-        busname,
-        _SESSION_INTERFACE,
-        "Closed",
-        session_handle,
-        None,
-        Gio.DBusSignalFlags.NONE,
-        on_closed,
-        None,
-    )
-    logger.debug(
-        "waiting up to %s for %s.%s on %s for session %s",
-        "forever" if timeout is None else f"{timeout:g}s",
-        interface,
-        signal,
-        _OBJECT_PATH,
-        session_handle,
-    )
+    # Collected as they are made, and unsubscribed from the list, for
+    # `_request`'s reason: taking them into two locals before the try meant
+    # a failure in the second subscribe left the first one registered for
+    # the life of the connection, with nothing holding a handle to it.
+    subscriptions: list[Any] = []
     try:
+        subscriptions.append(
+            connection.signal_subscribe(
+                busname,
+                interface,
+                signal,
+                _OBJECT_PATH,
+                None,
+                Gio.DBusSignalFlags.NONE,
+                on_signal,
+                None,
+            )
+        )
+        subscriptions.append(
+            connection.signal_subscribe(
+                busname,
+                _SESSION_INTERFACE,
+                "Closed",
+                session_handle,
+                None,
+                Gio.DBusSignalFlags.NONE,
+                on_closed,
+                None,
+            )
+        )
+        logger.debug(
+            "waiting up to %s for %s.%s on %s for session %s",
+            "forever" if timeout is None else f"{timeout:g}s",
+            interface,
+            signal,
+            _OBJECT_PATH,
+            session_handle,
+        )
         if not result and not session_closed and not malformed:
             timeout_source = None
             if timeout is not None:
@@ -1441,8 +1553,8 @@ def _wait_for_signal(
                 if timeout_source is not None and not timeout_fired:
                     GLib.source_remove(timeout_source)
     finally:
-        connection.signal_unsubscribe(subscription)
-        connection.signal_unsubscribe(closed_subscription)
+        for subscription in subscriptions:
+            connection.signal_unsubscribe(subscription)
     return _signal_outcome(
         signal, timeout, result, malformed, timed_out, session_closed
     )
