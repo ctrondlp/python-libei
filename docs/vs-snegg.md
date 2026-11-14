@@ -78,11 +78,15 @@ mechanism ended up shaped the way they did.
   logging-context accessors, `*_event_type_to_string()`, the
   NUL-terminated `*_device_text_utf8()` (the `_with_length` form is bound
   instead, so a str containing a NUL isn't silently truncated), and the
-  `*_get_context()` accessors, which have nothing to return: a context is
-  only ever created by its own `create_for_*()`, never wrapped from a raw
-  pointer. The README's "What's implemented" section says the same in
-  user-facing terms, so a caller finds out from the docs rather than from
-  an `AttributeError`.
+  seat, keymap and client `*_get_context()` accessors. (The two *device*
+  variants are bound and used internally by `frame()`, but none of the
+  family is ever surfaced: a context is only ever created by its own
+  `create_for_*()`, never wrapped from a raw pointer.) The README's
+  "What's implemented" section covers the same ground in user-facing
+  terms, so a caller finds out from the docs rather than from an
+  `AttributeError`; which of these are bound-but-internal rather than
+  unbound is spelled out in
+  [developers/architecture.md](developers/architecture.md).
 
 - **Accessors check the event type.** libei's data accessors don't report a
   mismatch to the caller: `ei_event_keyboard_get_key()` on a pointer event

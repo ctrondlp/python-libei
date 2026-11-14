@@ -247,6 +247,8 @@ class FakeInputCaptureConnection:
     ) -> tuple[FakeReply, FakeUnixFDList]:
         self.calls.append((method, parameters.value))
         self.call_targets.append((method, bus_name, object_path, timeout))
+        # Index 0 against a one-fd list: the only in-range pair, and now it
+        # has to be, since FakeUnixFDList models the real -1-on-bad-index.
         return FakeReply((0,)), FakeUnixFDList(self.fd_responses[method])
 
 

@@ -7,6 +7,117 @@ All notable changes to python-libei are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-13
+
+### Added
+
+- **Round-trip coverage for the socket backend, `SEAT_BIND` and
+  `scroll_stop`/`scroll_cancel`.** Three more groups of public names that
+  no test reached, found the same way as 0.8.1's sweep.
+  `create_for_socket()` on both sides is a whole *transport* the fd-backend
+  tests never take, and the only one that can answer `eis.Client.pid` —
+  `eis_backend_socket_get_client_pid` reads a live `SO_PEERCRED`
+  credential, so with client and server in one process the reported pid has
+  to be exactly `os.getpid()`. That symbol is libei 1.5+ while the
+  transport itself is on the 1.0.0 floor, so the round trip runs
+  everywhere and only the pid read is version-gated. `SEAT_BIND` exercises
+  `eis_event_seat_has_capability` at the value level, with the offer and
+  the bind each passing their capabilities in a different order so the
+  asserted result can match neither by accident.
+  `scroll_stop`/`scroll_cancel` set their two axes asymmetrically, so a
+  getter wired to the wrong axis symbol disagrees with what was sent.
+
+### Documented
+
+- **`*_get_context()` is not quite as unbound as the docs said.** The
+  "deliberately unbound" list in `docs/developers/architecture.md` and the
+  matching bullet in `docs/vs-snegg.md` both claimed the whole
+  `*_get_context()` family has nothing to hand back and is therefore not
+  bound. The two *device* variants are in fact bound and used internally:
+  when the caller gives `frame()` no `timestamp`, it reads the device's own
+  context to get one, because `ei_now()` needs a context. What is true of
+  all of them is that none is ever *surfaced* — a context only ever
+  reaches Python through its own `create_for_*()`, never wrapped from a raw
+  pointer — which is the claim the docs now make. The seat, keymap and
+  client variants stay genuinely unbound.
+
+- **There is no C-level logging for liboeffis.** `docs/recipes.md`'s
+  Logging section listed `libei.oeffis` alongside `libei.ei` and
+  `libei.eis` as a logger carrying routed C diagnostics. liboeffis exposes
+  no log-handler entry point to hook, so nothing of the sort reaches it;
+  that logger carries only this package's own messages. Named explicitly
+  rather than quietly dropped from the list, since "no output on that
+  logger" is otherwise indistinguishable from a library that has gone
+  quiet.
+
+### Fixed
+
+- **The `version` property reply is checked before it is believed.** Both
+  portals' version reads unpacked a `Properties.Get` reply on faith. As
+  everywhere in this module, `_call_sync` is given no `reply_type`, so
+  GDBus validates nothing about the shape that comes back — which is why
+  every other reply-consuming site here checks the unpacked value first.
+  These two did not: a reply that did not unpack to a single value raised
+  `ValueError` out of the tuple assignment, and a non-numeric `version`
+  raised `TypeError` from `int()`, both bare built-ins escaping the
+  `except PortalError` that `docs/troubleshooting.md` promises covers the
+  negotiation. They now raise `PortalProtocolError` with the reply as the
+  payload, like the `Response` and fd-index faults beside them. A `True` is
+  refused too rather than read as version 1 — `bool` is an `int`, so it
+  would otherwise have been reported as a portal too old for
+  `ConnectToEIS`, blaming the version for a reply that was nonsense.
+  Verified against a live portal rather than a stub: on Ubuntu 26.10
+  (GNOME/Wayland) the real `org.freedesktop.portal.Desktop` answered
+  RemoteDesktop version 2 through this path, and six malformed shapes —
+  two values, none, a non-tuple, a string, a `True` and a `None` — each
+  arrived as a `PortalProtocolError` catchable as `PortalError`. With the
+  check removed, the same six produced a bare `ValueError`/`TypeError` or
+  silently returned the nonsense as a version. Reading a property needs no
+  session and so no consent dialog, which is what makes this path
+  reachable over a plain login.
+- **A failed second signal subscription no longer leaks the first.**
+  `_wait_for_signal` took its two `signal_subscribe()` handles into locals
+  before the `try`/`finally` that unsubscribes them, so a failure in the
+  second left the first registered for the life of the connection with
+  nothing holding its handle. Collected into a list as they are made and
+  unsubscribed from that list, which is what `_request` already does.
+
+- **`ConnectToEIS`'s fd reply was trusted in three ways it should not have
+  been, one of which handed out `-1` as the EIS fd.** The reply is `(h)` —
+  an *index* into an fd list carried out-of-band — and `_call_for_fd()`
+  passed the index straight to `g_unix_fd_list_get()`. Measured against
+  GLib 2.90.1 and the Gio-2.0.gir contract, that is wrong three times
+  over:
+
+  - The out fd list is **nullable**. A well-formed reply that attached no
+    fds arrives as `None`, and dereferencing it raised `AttributeError`
+    ('NoneType' object has no attribute 'get') — a name no
+    `except PortalError` catches.
+  - A bad index is a **programmer error**, not a runtime failure.
+    `g_unix_fd_list_get()` asserts `index >= 0 && index < nfd`, logs
+    `GLib-GIO-CRITICAL`, and returns `-1` *without raising and without
+    setting a `GError`*. So the previous attempt at hardening this — an
+    `except GLib.Error` around the `get()`, reporting "no matching fd" —
+    could never fire for the case it was written for. The `-1` flowed out
+    as the session's `eis_fd` instead, into an
+    `ei.Sender.create_for_fd()` that has no guard against a negative one,
+    with `close()`'s `os.close(-1)` swallowing the resulting `EBADF` at
+    debug level. The fix is the bounds check the GIR itself prescribes,
+    against `get_length()` — `lookup()` would do it in one call but is
+    GLib 2.90+ only.
+  - The one failure `get()` *does* raise for is the dup it performs to
+    hand back an owned fd, i.e. running out of file descriptors. That is
+    still caught, and the message now says so rather than blaming the
+    index.
+
+  All three now raise `PortalProtocolError`, carrying the index as
+  `.payload`, so a caller's `except PortalError` covers the fd leg of the
+  negotiation as it already covered the signal payloads. The suite's
+  `FakeUnixFDList` grew the real semantics to match — it holds a list of
+  fds, returns `-1` for an out-of-range index and never raises — because
+  the old one ignored its index entirely, which made every index valid and
+  was why the gap went unnoticed.
+
 ## [0.8.1] - 2026-11-11
 
 ### Added

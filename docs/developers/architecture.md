@@ -51,9 +51,18 @@ deliberate:
   instead, so text containing a NUL is not truncated.
 - `ei_new()` — superseded by `ei_new_sender()` / `ei_new_receiver()`.
 - `*_clock_set_now_func()`.
-- The `*_get_context()` accessors, which have nothing to hand back: a context
-  is only ever created by its own `create_for_*()`, never wrapped from a raw
-  pointer.
+
+One accessor pair sits on the line between bound and not. Of the
+`*_get_context()` accessors the headers export, the two device variants —
+`ei_device_get_context` and `eis_device_get_context` — *are* bound and *are*
+used internally: when the caller gives `frame()` no `timestamp`, it reads
+the device's own context to get one (`ei_now()` needs a context). A caller
+who passes a timestamp never reaches the accessor. The seat, keymap and
+client variants stay unbound, and what the
+package never does with the two it binds is *wrap* the returned pointer into
+a `Context` object: a context only ever reaches Python through its own
+`create_for_*()`, never from a raw pointer, so there is no public
+`Device.context` accessor to hand one back.
 
 The gesture and stylus functions that libei's `main` branch adds -- 46 in
 libei and 51 in libeis against 1.6.0's headers, counted 2026-09-30: the

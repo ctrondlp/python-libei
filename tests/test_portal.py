@@ -48,11 +48,28 @@ class FakeReply:
 
 
 class FakeUnixFDList:
-    def __init__(self, fd: int) -> None:
-        self._fd = fd
+    """Stands in for `Gio.UnixFDList`, with its real index semantics.
 
-    def get(self, _index: int) -> int:
-        return self._fd
+    `g_unix_fd_list_get()` treats a bad index as a *programmer error*: it
+    asserts `index >= 0 && index < nfd`, logs `GLib-GIO-CRITICAL` and
+    returns **-1**, without raising and without setting a `GError`
+    (measured on GLib 2.90.1). An earlier version of this fake ignored its
+    index and always handed back the one fd it held, which made every
+    index equally valid and hid exactly the bug `_call_for_fd`'s bounds
+    check exists for. `get_length()` is what that check reads -- the
+    portable alternative to `lookup()`, which is GLib 2.90+ only.
+    """
+
+    def __init__(self, *fds: int) -> None:
+        self._fds = list(fds)
+
+    def get_length(self) -> int:
+        return len(self._fds)
+
+    def get(self, index: int) -> int:
+        if index < 0 or index >= len(self._fds):
+            return -1
+        return self._fds[index]
 
 
 class FakeGLibError(Exception):
@@ -68,6 +85,19 @@ class FakeGLibError(Exception):
         super().__init__(message)
         self.domain = domain
         self.code = code
+
+
+class FailingDupUnixFDList(FakeUnixFDList):
+    """A list that holds the fd but cannot dup it: EMFILE/ENFILE.
+
+    The *only* way a real `g_unix_fd_list_get()` raises `GLib.Error` for an
+    in-range index -- it dups the fd to hand back an owned one, and that
+    dup can fail when the process is out of descriptors. Kept separate from
+    FakeUnixFDList so the common fake stays honest about never raising.
+    """
+
+    def get(self, index: int) -> int:
+        raise FakeGLibError("Too many open files")
 
 
 _OPEN_PIPES: list[tuple[int, int]] = []
@@ -271,6 +301,8 @@ class FakeConnection:
     ) -> tuple[FakeReply, FakeUnixFDList]:
         self.calls.append((method, parameters.value))
         self.call_targets.append((method, bus_name, object_path, timeout))
+        # Index 0 against a one-fd list: the only in-range pair, and now it
+        # has to be, since FakeUnixFDList models the real -1-on-bad-index.
         return FakeReply((0,)), FakeUnixFDList(self.fd_responses[method])
 
 
@@ -369,6 +401,48 @@ def test_old_remote_desktop_version_is_refused() -> None:
     assert connection.calls == [
         ("Get", ("org.freedesktop.portal.RemoteDesktop", "version"))
     ]
+
+
+def test_a_non_numeric_version_property_raises_a_portal_error() -> None:
+    # `_call_sync` is given no reply_type -- as everywhere in this module --
+    # so GDBus validates nothing about the shape that comes back, and every
+    # other reply-consuming site checks the unpacked value before trusting
+    # it. These two did not: `int(version)` on a string raised a bare
+    # TypeError/ValueError, escaping the `except PortalError` that
+    # docs/troubleshooting.md promises covers the negotiation.
+    connection = FakeConnection(version="three")  # type: ignore[arg-type]
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert "non-numeric version" in str(excinfo.value)
+    assert excinfo.value.step == "Get"
+
+
+def test_a_version_reply_of_the_wrong_shape_raises_a_portal_error() -> None:
+    # The other half: a reply that does not unpack to a one-element tuple
+    # raised ValueError out of the tuple assignment itself.
+    class WrongShape(FakeConnection):
+        def call_sync(self, *args: Any, **kwargs: Any) -> FakeReply:
+            if args[3] == "Get":
+                self.calls.append(("Get", None))
+                return FakeReply(())
+            return super().call_sync(*args, **kwargs)
+
+    connection = WrongShape()
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert "not that shape" in str(excinfo.value)
+
+
+def test_a_bool_is_not_accepted_as_a_version() -> None:
+    # bool is an int subclass, so a `True` would otherwise read as version 1
+    # and be refused with the wrong error -- a version check that says "too
+    # old" about a portal that answered nonsense.
+    connection = FakeConnection(version=True)
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError):
+            portal.RemoteDesktopSession.negotiate(connection=connection)
 
 
 def test_declined_create_session_raises_portal_denied_error() -> None:
@@ -1002,6 +1076,123 @@ def test_a_failed_connect_to_eis_closes_the_portal_session() -> None:
     with install_fake_gi(connection):
         with pytest.raises(portal.PortalError, match="D-Bus"):
             portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+class _FixedFdReplyConnection(FakeConnection):
+    """A FakeConnection whose ConnectToEIS reply is dictated per test.
+
+    `ConnectToEIS` is specified as returning `(h)` -- an *index* into an fd
+    list the reply carries out-of-band -- and the three ways that pair can
+    disagree are what the tests below drive. Each subclass fixes
+    `reply_index` and `out_fd_list` (`None` modelling the nullable out
+    list) and changes nothing else about the negotiation, so what the
+    assertion sees is only the fd-reply handling.
+    """
+
+    reply_index: int = 0
+    out_fd_list: Any = None
+
+    def call_with_unix_fd_list_sync(
+        self,
+        bus_name: Any,
+        object_path: Any,
+        interface: Any,
+        method: str,
+        parameters: FakeVariant,
+        reply_type: Any,
+        flags: Any,
+        timeout: Any,
+        fd_list: Any,
+        cancellable: Any,
+    ) -> tuple[FakeReply, Any]:
+        self.calls.append((method, parameters.value))
+        self.call_targets.append((method, bus_name, object_path, timeout))
+        return FakeReply((self.reply_index,)), self.out_fd_list
+
+
+def test_connect_to_eis_with_no_out_fd_list_raises_typed() -> None:
+    # GDBusProxy/GDBusConnection's out fd list is nullable: a well-formed
+    # `(h)` reply that attached no fds at all arrives as None. Dereferencing
+    # that used to raise AttributeError ('NoneType' object has no attribute
+    # 'get') from inside negotiate(), which no `except PortalError` catches.
+    class NoFdListConnection(_FixedFdReplyConnection):
+        out_fd_list = None
+
+    connection = NoFdListConnection()
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert excinfo.value.step == "ConnectToEIS"
+    assert excinfo.value.payload == 0
+    assert "attached no fd list" in str(excinfo.value)
+    # The session was approved before this failed, so it still has to be
+    # closed on the way out.
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_connect_to_eis_with_an_out_of_range_fd_index_raises_typed() -> None:
+    # The case the previous version of this test got wrong. An out-of-range
+    # index is a *programmer error* to g_unix_fd_list_get(): it logs
+    # GLib-GIO-CRITICAL and returns -1 without raising and without setting a
+    # GError (measured, GLib 2.90.1). So nothing is thrown to catch -- the -1
+    # simply flowed out as the EIS fd, and ei.Sender.create_for_fd() has no
+    # guard against a negative one. Only a bounds check against get_length()
+    # catches this, which is why this test fails against the pre-fix
+    # _call_for_fd: it returned -1 and negotiate() succeeded.
+    class OutOfRangeConnection(_FixedFdReplyConnection):
+        reply_index = 1  # one past the end of the one-fd list below
+
+    connection = OutOfRangeConnection()
+    connection.out_fd_list = FakeUnixFDList(_fresh_fd())
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert excinfo.value.step == "ConnectToEIS"
+    assert excinfo.value.payload == 1
+    # The message has to name both numbers: an index alone does not say
+    # whether it was one past the end or wildly wrong.
+    assert "index 1, 1 fd(s) attached" in str(excinfo.value)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_connect_to_eis_raises_typed_when_duplicating_the_fd_fails() -> None:
+    # The one real GLib.Error from an *in-range* get(): the function dups the
+    # fd to hand back an owned one, and the dup fails at EMFILE/ENFILE. Left
+    # bare it would reach the caller as the raw GLib type, past every
+    # `except PortalError`. The message must say what it is -- fd exhaustion
+    # -- and not "no matching fd", which is the case the bounds check above
+    # already took.
+    class ExhaustedFdConnection(_FixedFdReplyConnection):
+        reply_index = 0
+
+    connection = ExhaustedFdConnection()
+    connection.out_fd_list = FailingDupUnixFDList(_fresh_fd())
+    with install_fake_gi(connection):
+        with pytest.raises(portal.PortalProtocolError) as excinfo:
+            portal.RemoteDesktopSession.negotiate(connection=connection)
+    assert excinfo.value.step == "ConnectToEIS"
+    assert excinfo.value.payload == 0
+    assert "out of file descriptors" in str(excinfo.value)
+    assert _closed_sessions(connection) == ["/session/1"]
+
+
+def test_connect_to_eis_resolves_the_index_against_the_fd_list() -> None:
+    # The happy path, with the index doing real work: two fds attached and
+    # the reply naming the *second*, so an implementation that bounds-checked
+    # and then returned the wrong element -- or hardcoded index 0, which
+    # every other test in this file would still pass -- is caught.
+    wanted = _fresh_fd()
+
+    class TwoFdConnection(_FixedFdReplyConnection):
+        reply_index = 1
+
+    connection = TwoFdConnection()
+    connection.out_fd_list = FakeUnixFDList(_fresh_fd(), wanted)
+    with install_fake_gi(connection):
+        session = portal.RemoteDesktopSession.negotiate(connection=connection)
+        assert session.eis_fd == wanted
+        session.close()
     assert _closed_sessions(connection) == ["/session/1"]
 
 
