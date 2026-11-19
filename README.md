@@ -150,6 +150,39 @@ asserted.
 Exactly what was run, when, and against which versions:
 [docs/developers/verification.md](docs/developers/verification.md).
 
+### What the API raises
+
+Three independent exception families, by the layer that raises them, so a
+caller can catch at the granularity they need — plus one that sits before
+all of them:
+
+- **`LibraryNotFoundError`** (a `RuntimeError`, exported by `libei.ei`,
+  `libei.eis` and `libei.oeffis` alike) — the native library could not be
+  loaded. Importing never raises it; the first call that needs the library
+  does, and every later call after that. `is_available()` asks the same
+  question without raising.
+- **`libei.ei.Error`** (and `libei.eis.Error`) — the native library reported
+  a failure through its own return codes. One base class per module;
+  subclasses are added as distinct failure modes earn them rather than up
+  front.
+- **`libei.oeffis.DisconnectedError`**, with `SessionClosedError` under it —
+  the EIS connection is gone. `dispatch()` raises the subclass when the
+  portal closed the session and the base class when the connection dropped
+  or the fd could not be obtained; `eis_fd` raises the base class whenever
+  no connection is up yet, so it is `dispatch()` that tells the two apart.
+- **`libei.portal.PortalError`**, with `PortalVersionError`,
+  `PortalTimeoutError`, `PortalDeniedError`, `PortalProtocolError` and
+  `PortalSessionClosedError` under it — each a *different* thing the portal
+  round trip can do, kept separate on purpose: a timeout (no answer), a
+  denial (answered no), a protocol surprise (answered malformed) and a
+  version mismatch are not interchangeable, and collapsing them would make a
+  caller guess. These are the ones worth catching individually.
+
+Argument mistakes that are the caller's and not the desktop's —
+no capabilities, the wrong value kind — raise the stock `ValueError` /
+`TypeError`, never a library exception. The hierarchy is stable in shape; as
+with the rest of the API, names may still change before 1.0.
+
 ## Alternatives
 
 | Instead of this | Why you might |
